@@ -4,10 +4,37 @@ import "fmt"
 
 const SystemPrompt = `You are PseudoClaude, a helpful terminal AI assistant. Answer clearly, preserve useful context across the current conversation, and format code or structured output with Markdown when it helps.`
 
-const CatBanner = ` /\_/\
-( o.o )
- > ^ <`
+const LogoBanner = ` ██████╗██╗      █████╗ ██╗   ██╗██████╗ ███████╗
+██╔════╝██║     ██╔══██╗██║   ██║██╔══██╗██╔════╝
+██║     ██║     ███████║██║   ██║██║  ██║█████╗  
+██║     ██║     ██╔══██║██║   ██║██║  ██║██╔══╝  
+╚██████╗███████╗██║  ██║╚██████╔╝██████╔╝███████╗
+ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝`
+
+const CatBanner = LogoBanner
 
 func RenderBanner(version, cwd string) string {
-	return fmt.Sprintf("%s\nPseudoClaude v%s\ncwd: %s\nReady. Start a conversation when you are.", CatBanner, version, cwd)
+	return RenderResponsiveBanner(version, cwd, 120, 24)
 }
+
+func RenderResponsiveBanner(version, cwd string, width, height int) string {
+	logo := SelectLogo(width, height)
+	return fmt.Sprintf("%s\nPseudoClaude v%s\ncwd: %s\nReady. Start a conversation when you are.", logo, version, cwd)
+}
+
+func SelectLogo(width, height int) string {
+	switch {
+	case width >= 58 && height >= 12:
+		return LogoBanner
+	case width >= 34 && height >= 10:
+		return MiniLogo
+	default:
+		return TinyLogo
+	}
+}
+
+const MiniLogo = `╭─ PseudoClaude ─╮
+│ terminal agent │
+╰────────────────╯`
+
+const TinyLogo = `PseudoClaude`

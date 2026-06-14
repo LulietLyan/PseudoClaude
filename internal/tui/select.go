@@ -55,6 +55,7 @@ func (m Model) updateSelecting(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Println(errorBlock(fmt.Errorf("provider 初始化失败: %w", err)))
 			}
 			m.provider = provider
+			m.runner.Provider = provider
 			m.state = stateIdle
 			return m, m.textarea.Focus()
 		}

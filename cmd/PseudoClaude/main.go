@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"PseudoClaude/internal/config"
+	"PseudoClaude/internal/tools"
 	"PseudoClaude/internal/tui"
 )
 
@@ -20,7 +21,13 @@ func main() {
 		cwd = "."
 	}
 
-	if err := tui.New(cfg.Providers, cwd).Run(); err != nil {
+	registry, err := tools.DefaultRegistry()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "工具注册错误: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := tui.New(cfg.Providers, cwd, registry).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "运行错误: %v\n", err)
 		os.Exit(1)
 	}
