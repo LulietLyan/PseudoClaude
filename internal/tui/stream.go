@@ -35,6 +35,16 @@ func (m Model) updateIdle(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if text == "/exit" {
 				return m, tea.Quit
 			}
+			if text == "/plan" {
+				m.planMode = true
+				m.textarea.Reset()
+				return m, tea.Println(statusMessageBlock("Plan Mode 已开启。接下来的输入会只使用只读工具；输入 /do 执行最近计划。"))
+			}
+			if text == "/chat" || text == "/exit-plan" {
+				m.planMode = false
+				m.textarea.Reset()
+				return m, tea.Println(statusMessageBlock("Plan Mode 已关闭。"))
+			}
 			return m.submit(text)
 		}
 	}
@@ -52,6 +62,9 @@ func (m Model) submit(text string) (tea.Model, tea.Cmd) {
 	if err != nil {
 		return m, tea.Println(errorBlock(err))
 	}
+	if strings.HasPrefix(text, "/plan") {
+		m.planMode = true
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
@@ -61,7 +74,7 @@ func (m Model) submit(text string) (tea.Model, tea.Cmd) {
 	m.events = m.runner.Run(ctx, req)
 	m.turnStart = time.Now()
 	m.elapsed = 0
-	m.curReply.Reset()
+	m.curReply = ""
 	m.curTool = nil
 	m.progress = "starting"
 	m.usage = nil
@@ -89,6 +102,8 @@ func (m Model) requestForInput(text string) (agent.Request, string, error) {
 			return agent.Request{}, "", fmt.Errorf("没有可执行的最近计划，请先使用 /plan <任务>")
 		}
 		return agent.Request{Mode: agent.ModeDo, PlanTask: m.lastPlan.task, PlanText: m.lastPlan.text, Conversation: m.conv}, "/do", nil
+	case m.planMode:
+		return agent.Request{Mode: agent.ModePlan, PlanTask: text, Conversation: m.conv}, text, nil
 	default:
 		return agent.Request{Mode: agent.ModeChat, UserText: text, Conversation: m.conv}, text, nil
 	}
@@ -123,7 +138,7 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 		m.progress = event.Message
 		return m, waitForAgentEvent(m.events)
 	case agent.EventTextDelta:
-		m.curReply.WriteString(event.Text)
+		m.curReply += event.Text
 		return m, waitForAgentEvent(m.events)
 	case agent.EventUsage:
 		if event.Usage != nil {
@@ -167,7 +182,7 @@ func (m Model) finishAgentRun(event agent.Event) (tea.Model, tea.Cmd) {
 		stop := *event.Stop
 		m.lastStop = &stop
 	}
-	reply := m.curReply.String()
+	reply := m.curReply
 	var cmds []tea.Cmd
 	if strings.TrimSpace(reply) != "" {
 		cmds = append(cmds, tea.Println(assistantBlock(reply, m.elapsed, m.renderer)))
@@ -178,7 +193,7 @@ func (m Model) finishAgentRun(event agent.Event) (tea.Model, tea.Cmd) {
 	if event.Stop != nil && event.Stop.Reason == agent.StopCompleted {
 		m.saveOrClearPlan(reply)
 	}
-	m.curReply.Reset()
+	m.curReply = ""
 	m.curTool = nil
 	cmds = append(cmds, m.textarea.Focus())
 	return m, tea.Batch(cmds...)
@@ -202,6 +217,7 @@ func (m *Model) saveOrClearPlan(reply string) {
 	}
 	if strings.HasPrefix(lastUser, "Execution mode.") {
 		m.lastPlan = nil
+		m.planMode = false
 	}
 }
 

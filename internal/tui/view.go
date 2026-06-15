@@ -84,7 +84,7 @@ func (m Model) bannerView() string {
 }
 
 func (m Model) streamingView() string {
-	reply := softWrap(m.curReply.String(), max(20, m.width-4))
+	reply := softWrap(m.curReply, max(20, m.width-4))
 	label := m.progress
 	if label == "" {
 		label = "Imagining..."
@@ -111,6 +111,9 @@ func (m Model) statusBar() string {
 		left = m.provider.Name()
 		right = m.provider.Model()
 	}
+	if m.planMode {
+		left += " · PLAN"
+	}
 	if m.lastStop != nil && m.lastStop.Reason != "" {
 		left += " · " + string(m.lastStop.Reason)
 	}
@@ -124,6 +127,10 @@ func (m Model) statusBar() string {
 
 func userBlock(text string) string {
 	return userStyle.Render("● " + text)
+}
+
+func statusMessageBlock(message string) string {
+	return statusStyle.Render("● " + message)
 }
 
 func assistantBlock(reply string, elapsed time.Duration, renderer *glamour.TermRenderer) string {

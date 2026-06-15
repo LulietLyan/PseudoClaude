@@ -88,6 +88,23 @@ func TestViewDoesNotRedrawBannerWhileTypingOrAfterReply(t *testing.T) {
 	}
 }
 
+func TestStreamingTextDeltasDoNotPanicAfterModelCopies(t *testing.T) {
+	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
+	model.provider = fakeProvider{events: []llm.StreamEvent{{Text: "hello"}, {Done: true}}}
+	model.runner.Provider = model.provider
+	next, _ := model.submit("hi")
+	model = next.(Model)
+
+	next, _ = model.updateStreaming(agentMsg{Type: agent.EventTextDelta, Text: "hel"})
+	model = next.(Model)
+	next, _ = model.updateStreaming(agentMsg{Type: agent.EventTextDelta, Text: "lo"})
+	model = next.(Model)
+
+	if model.curReply != "hello" {
+		t.Fatalf("curReply = %q, want hello", model.curReply)
+	}
+}
+
 func TestViewDoesNotInsertLargeGapBeforeInput(t *testing.T) {
 	model := New(nil, t.TempDir(), nil)
 	model.width = 80
@@ -172,6 +189,21 @@ func TestPlanAndDoInputHandling(t *testing.T) {
 	}
 	if req.Mode != agent.ModeDo || req.PlanTask != "change the thing" || req.PlanText != "plan text" {
 		t.Fatalf("do request = %+v", req)
+	}
+}
+
+func TestPlanModePersistsForPlainFollowupInput(t *testing.T) {
+	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
+	model.provider = fakeProvider{events: []llm.StreamEvent{{Text: "plan text"}, {Done: true}}}
+	model.runner.Provider = model.provider
+	model.planMode = true
+
+	req, printable, err := model.requestForInput("我要做个电商系统")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Mode != agent.ModePlan || req.PlanTask != "我要做个电商系统" || printable != "我要做个电商系统" {
+		t.Fatalf("request = %+v printable=%q", req, printable)
 	}
 }
 

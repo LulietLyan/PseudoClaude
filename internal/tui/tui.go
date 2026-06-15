@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"PseudoClaude/internal/agent"
@@ -40,12 +39,13 @@ type Model struct {
 	runner    agent.Runner
 	events    <-chan agent.Event
 	cancel    context.CancelFunc
-	curReply  strings.Builder
+	curReply  string
 	curTool   *toolStatus
 	progress  string
 	usage     *llm.Usage
 	lastStop  *agent.Stop
 	lastPlan  *planState
+	planMode  bool
 	turnStart time.Time
 	elapsed   time.Duration
 	width     int

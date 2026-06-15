@@ -50,6 +50,23 @@ type scriptedTool struct {
 	content string
 }
 
+type fakeExecTool struct {
+	name     string
+	safety   tools.Safety
+	executed *bool
+}
+
+func (f fakeExecTool) Definition() tools.Definition {
+	return tools.Definition{Name: f.name, Description: "fake exec", InputSchema: map[string]any{"type": "object"}, Safety: f.safety}
+}
+
+func (f fakeExecTool) Execute(ctx context.Context, input json.RawMessage, env tools.Env) tools.Result {
+	if f.executed != nil {
+		*f.executed = true
+	}
+	return tools.Success(f.name, "executed", nil)
+}
+
 func (s scriptedTool) Definition() tools.Definition {
 	return tools.Definition{Name: s.name, Description: "scripted", InputSchema: map[string]any{"type": "object"}, Safety: s.safety}
 }
@@ -202,7 +219,7 @@ func TestSideEffectToolsRunSerially(t *testing.T) {
 		{ID: "b", Name: "write_b", Arguments: json.RawMessage(`{}`)},
 	}
 	events := make(chan Event, 16)
-	results, err := executeToolCalls(context.Background(), registry, tools.Env{}, 1, calls, events)
+	results, err := executeToolCalls(context.Background(), registry, tools.Env{}, 1, calls, events, toolExecutionOptions{})
 	close(events)
 	if err != nil {
 		t.Fatal(err)
@@ -212,6 +229,43 @@ func TestSideEffectToolsRunSerially(t *testing.T) {
 	}
 	if len(order) != 2 || order[0] != "write_a" || order[1] != "write_b" {
 		t.Fatalf("order = %+v", order)
+	}
+}
+
+func TestPlanModeRejectsSideEffectToolIfModelRequestsIt(t *testing.T) {
+	provider := &fakeProvider{streams: [][]llm.StreamEvent{
+		{{ToolCall: &llm.ToolCall{ID: "call_1", Name: "write_file", Arguments: json.RawMessage(`{}`)}}, {Done: true}},
+		{{Text: "I need requirements first."}, {Done: true}},
+	}}
+	executed := false
+	registry, err := tools.NewRegistry(
+		scriptedTool{name: "read_file", safety: tools.SafetyReadOnly},
+		fakeExecTool{name: "write_file", safety: tools.SafetySideEffect, executed: &executed},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conv conversation.Conversation
+	events := collectEvents(Runner{Provider: provider, Registry: registry}.Run(context.Background(), Request{
+		Mode:         ModePlan,
+		PlanTask:     "make a store",
+		Conversation: &conv,
+	}))
+	if lastStop(t, events).Reason != StopCompleted {
+		t.Fatalf("events = %+v", events)
+	}
+	if executed {
+		t.Fatal("side effect tool executed in plan mode")
+	}
+	msgs := conv.Messages()
+	var found bool
+	for _, msg := range msgs {
+		if msg.ToolResult != nil && strings.Contains(msg.ToolResult.Content, "tool_not_allowed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected tool_not_allowed result in messages: %+v", msgs)
 	}
 }
 

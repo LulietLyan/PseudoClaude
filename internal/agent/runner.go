@@ -73,7 +73,7 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 		return
 	}
 
-	userText, defs := r.prepareRequest(req)
+	userText, defs, toolOpts := r.prepareRequest(req)
 	req.Conversation.AddUser(userText)
 	sendEvent(ctx, events, Event{Type: EventProgress, Message: "agent run started"})
 
@@ -112,7 +112,7 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 		}
 
 		req.Conversation.AddAssistantToolCalls(out.ToolCalls)
-		results, err := executeToolCalls(ctx, r.Registry, r.Env, iteration, out.ToolCalls, events)
+		results, err := executeToolCalls(ctx, r.Registry, r.Env, iteration, out.ToolCalls, events, toolOpts)
 		for _, result := range results {
 			req.Conversation.AddToolResult(llm.ToolResult{
 				CallID:  result.Call.ID,
@@ -137,17 +137,19 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 	}
 }
 
-func (r Runner) prepareRequest(req Request) (string, []tools.Definition) {
+func (r Runner) prepareRequest(req Request) (string, []tools.Definition, toolExecutionOptions) {
 	if r.Registry == nil {
-		return requestText(req), nil
+		return requestText(req), nil, toolExecutionOptions{}
 	}
 	switch req.Mode {
 	case ModePlan:
-		return planPrompt(req.PlanTask), r.Registry.DefinitionsBySafety(tools.SafetyReadOnly)
+		return planPrompt(req.PlanTask), r.Registry.DefinitionsBySafety(tools.SafetyReadOnly), toolExecutionOptions{
+			AllowedSafety: map[tools.Safety]bool{tools.SafetyReadOnly: true},
+		}
 	case ModeDo:
-		return doPrompt(req.PlanTask, req.PlanText), r.Registry.Definitions()
+		return doPrompt(req.PlanTask, req.PlanText), r.Registry.Definitions(), toolExecutionOptions{}
 	default:
-		return requestText(req), r.Registry.Definitions()
+		return requestText(req), r.Registry.Definitions(), toolExecutionOptions{}
 	}
 }
 
@@ -162,7 +164,17 @@ func requestText(req Request) string {
 }
 
 func planPrompt(task string) string {
-	return fmt.Sprintf("Plan mode. Create an implementation plan for this task. You may use only read-only tools to inspect the workspace. Do not edit files, run commands, or make changes.\n\nTask:\n%s", strings.TrimSpace(task))
+	return fmt.Sprintf(`Plan mode. Your job is to clarify and plan before implementation.
+
+Rules:
+- Use only read-only tools to inspect the workspace.
+- Do not edit files, create directories, run commands, install dependencies, or make any project changes.
+- If the task is broad or underspecified, ask concise clarifying questions first instead of inventing requirements.
+- If you already have enough information, produce an implementation plan with target files, steps, validation, and risks.
+- Do not claim that files or directories were created in Plan mode.
+
+Task:
+%s`, strings.TrimSpace(task))
 }
 
 func doPrompt(task, plan string) string {
