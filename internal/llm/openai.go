@@ -3,9 +3,9 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"PseudoClaude/internal/config"
-	"PseudoClaude/internal/prompt"
 	"PseudoClaude/internal/tools"
 
 	"github.com/openai/openai-go/v3"
@@ -37,15 +37,16 @@ func (p openAIProvider) Model() string {
 	return p.cfg.Model
 }
 
-func (p openAIProvider) Stream(ctx context.Context, msgs []Message, defs []tools.Definition) <-chan StreamEvent {
+func (p openAIProvider) Stream(ctx context.Context, req Request) <-chan StreamEvent {
 	ch := make(chan StreamEvent)
 	go func() {
 		defer close(ch)
 
 		stream := p.client.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
-			Model:    openai.ChatModel(p.cfg.Model),
-			Messages: toOpenAIMessages(msgs),
-			Tools:    toOpenAITools(defs),
+			Model:         openai.ChatModel(p.cfg.Model),
+			Messages:      toOpenAIMessages(req),
+			Tools:         toOpenAITools(req.Tools),
+			StreamOptions: openai.ChatCompletionStreamOptionsParam{IncludeUsage: openai.Bool(true)},
 		})
 		acc := openai.ChatCompletionAccumulator{}
 		sentTools := make(map[string]bool)
@@ -58,6 +59,9 @@ func (p openAIProvider) Stream(ctx context.Context, msgs []Message, defs []tools
 
 			evt := stream.Current()
 			acc.AddChunk(evt)
+			if usage := openAIUsageFromCompletionUsage(acc.Usage); usage != nil {
+				sendStreamEvent(ctx, ch, StreamEvent{Usage: usage})
+			}
 			if len(evt.Choices) == 0 {
 				continue
 			}
@@ -81,15 +85,28 @@ func (p openAIProvider) Stream(ctx context.Context, msgs []Message, defs []tools
 				sendOpenAIToolCall(ctx, ch, call.ID, call.Function.Name, call.Function.Arguments)
 			}
 		}
+		if usage := openAIUsageFromCompletionUsage(acc.Usage); usage != nil {
+			sendStreamEvent(ctx, ch, StreamEvent{Usage: usage})
+		}
 		sendStreamEvent(ctx, ch, StreamEvent{Done: true})
 	}()
 	return ch
 }
 
-func toOpenAIMessages(msgs []Message) []openai.ChatCompletionMessageParamUnion {
-	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(msgs)+1)
-	out = append(out, openai.SystemMessage(prompt.SystemPrompt))
-	for _, msg := range msgs {
+func toOpenAIMessages(req Request) []openai.ChatCompletionMessageParamUnion {
+	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(req.Messages)+2)
+	system := strings.TrimSpace(req.System.Stable)
+	if environment := strings.TrimSpace(req.System.Environment); environment != "" {
+		if system != "" {
+			system += "\n\n" + environment
+		} else {
+			system = environment
+		}
+	}
+	if system != "" {
+		out = append(out, openai.SystemMessage(system))
+	}
+	for _, msg := range req.Messages {
 		if msg.ToolResult != nil {
 			out = append(out, openai.ToolMessage(msg.ToolResult.Content, msg.ToolResult.CallID))
 			continue
@@ -119,6 +136,9 @@ func toOpenAIMessages(msgs []Message) []openai.ChatCompletionMessageParamUnion {
 		}
 		out = append(out, openai.UserMessage(msg.Content))
 	}
+	if reminder := strings.TrimSpace(req.Reminder); reminder != "" {
+		out = append(out, openai.UserMessage(reminder))
+	}
 	return out
 }
 
@@ -143,4 +163,16 @@ func sendOpenAIToolCall(ctx context.Context, ch chan<- StreamEvent, id, name, ar
 		Name:      name,
 		Arguments: json.RawMessage(arguments),
 	}})
+}
+
+func openAIUsageFromCompletionUsage(usage openai.CompletionUsage) *Usage {
+	if usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0 && usage.PromptTokensDetails.CachedTokens == 0 {
+		return nil
+	}
+	return &Usage{
+		InputTokens:  usage.PromptTokens,
+		OutputTokens: usage.CompletionTokens,
+		TotalTokens:  usage.TotalTokens,
+		CacheRead:    usage.PromptTokensDetails.CachedTokens,
+	}
 }

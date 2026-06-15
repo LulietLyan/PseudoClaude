@@ -3,9 +3,9 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"PseudoClaude/internal/config"
-	"PseudoClaude/internal/prompt"
 	"PseudoClaude/internal/tools"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -39,20 +39,19 @@ func (p anthropicProvider) Model() string {
 	return p.cfg.Model
 }
 
-func (p anthropicProvider) Stream(ctx context.Context, msgs []Message, defs []tools.Definition) <-chan StreamEvent {
+func (p anthropicProvider) Stream(ctx context.Context, req Request) <-chan StreamEvent {
 	ch := make(chan StreamEvent)
 	go func() {
 		defer close(ch)
 
-		anthropicTools := toAnthropicTools(defs)
+		anthropicTools := toAnthropicTools(req.Tools)
+		msgs := appendAnthropicReminder(toAnthropicMessages(req.Messages), req.Reminder)
 		params := anthropic.MessageNewParams{
 			Model:     anthropic.Model(p.cfg.Model),
 			MaxTokens: anthropicMaxTokens,
-			System: []anthropic.TextBlockParam{
-				{Text: prompt.SystemPrompt},
-			},
-			Messages: toAnthropicMessages(msgs),
-			Tools:    anthropicTools,
+			System:    toAnthropicSystem(req.System),
+			Messages:  msgs,
+			Tools:     anthropicTools,
 		}
 		if p.cfg.Thinking {
 			params.Thinking = anthropic.ThinkingConfigParamOfEnabled(anthropicThinkingBudgetTokens)
@@ -83,6 +82,7 @@ func (p anthropicProvider) Stream(ctx context.Context, msgs []Message, defs []to
 			sendStreamEvent(ctx, ch, StreamEvent{Err: err})
 			return
 		}
+		sendStreamEvent(ctx, ch, StreamEvent{Usage: anthropicUsage(message.Usage)})
 		for _, block := range message.Content {
 			if toolUse, ok := block.AsAny().(anthropic.ToolUseBlock); ok {
 				sendStreamEvent(ctx, ch, StreamEvent{ToolCall: &ToolCall{
@@ -95,6 +95,22 @@ func (p anthropicProvider) Stream(ctx context.Context, msgs []Message, defs []to
 		sendStreamEvent(ctx, ch, StreamEvent{Done: true})
 	}()
 	return ch
+}
+
+func toAnthropicSystem(sys System) []anthropic.TextBlockParam {
+	var out []anthropic.TextBlockParam
+	if stable := strings.TrimSpace(sys.Stable); stable != "" {
+		out = append(out, anthropic.TextBlockParam{
+			Text: stable,
+			CacheControl: anthropic.CacheControlEphemeralParam{
+				TTL: anthropic.CacheControlEphemeralTTLTTL5m,
+			},
+		})
+	}
+	if environment := strings.TrimSpace(sys.Environment); environment != "" {
+		out = append(out, anthropic.TextBlockParam{Text: environment})
+	}
+	return out
 }
 
 func toAnthropicMessages(msgs []Message) []anthropic.MessageParam {
@@ -123,6 +139,21 @@ func toAnthropicMessages(msgs []Message) []anthropic.MessageParam {
 		}
 	}
 	return out
+}
+
+func appendAnthropicReminder(msgs []anthropic.MessageParam, reminder string) []anthropic.MessageParam {
+	reminder = strings.TrimSpace(reminder)
+	if reminder == "" {
+		return msgs
+	}
+	out := append([]anthropic.MessageParam(nil), msgs...)
+	block := anthropic.NewTextBlock(reminder)
+	last := len(out) - 1
+	if last >= 0 && out[last].Role == anthropic.MessageParamRoleUser {
+		out[last].Content = append(out[last].Content, block)
+		return out
+	}
+	return append(out, anthropic.NewUserMessage(block))
 }
 
 func toAnthropicTools(defs []tools.Definition) []anthropic.ToolUnionParam {
@@ -157,6 +188,17 @@ func toAnthropicTools(defs []tools.Definition) []anthropic.ToolUnionParam {
 		out = append(out, anthropic.ToolUnionParam{OfTool: &tool})
 	}
 	return out
+}
+
+func anthropicUsage(usage anthropic.Usage) *Usage {
+	total := usage.InputTokens + usage.OutputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens
+	return &Usage{
+		InputTokens:  usage.InputTokens,
+		OutputTokens: usage.OutputTokens,
+		TotalTokens:  total,
+		CacheWrite:   usage.CacheCreationInputTokens,
+		CacheRead:    usage.CacheReadInputTokens,
+	}
 }
 
 func stringSlice(value any) ([]string, bool) {

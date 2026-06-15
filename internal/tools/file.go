@@ -26,7 +26,7 @@ func NewEditFileTool() Tool  { return editFileTool{} }
 func (readFileTool) Definition() Definition {
 	return Definition{
 		Name:        "read_file",
-		Description: "Read a UTF-8 text file from the local workspace.",
+		Description: "Dedicated tool for reading a UTF-8 text file from the local workspace.",
 		Safety:      SafetyReadOnly,
 		InputSchema: objectSchema(map[string]any{
 			"path": stringProp("Path to the file to read."),
@@ -67,7 +67,7 @@ func (readFileTool) Execute(ctx context.Context, input json.RawMessage, env Env)
 func (writeFileTool) Definition() Definition {
 	return Definition{
 		Name:        "write_file",
-		Description: "Write complete UTF-8 text content to a local file, creating parent directories when needed.",
+		Description: "Write complete UTF-8 text content to a local file, creating parent directories when needed. Before overwriting, confirm the target content and user-change risk.",
 		Safety:      SafetySideEffect,
 		InputSchema: objectSchema(map[string]any{
 			"path":    stringProp("Path to the file to write."),
@@ -117,7 +117,7 @@ func (writeFileTool) Execute(ctx context.Context, input json.RawMessage, env Env
 func (editFileTool) Definition() Definition {
 	return Definition{
 		Name:        "edit_file",
-		Description: "Replace old_text with new_text only when old_text appears exactly once in a text file.",
+		Description: "Replace old_text with new_text only when old_text appears exactly once in a text file. Before editing, use read_file to inspect the target and confirm old_text is unique.",
 		Safety:      SafetySideEffect,
 		InputSchema: objectSchema(map[string]any{
 			"path":     stringProp("Path to the file to edit."),

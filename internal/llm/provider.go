@@ -25,9 +25,11 @@ type StreamEvent struct {
 }
 
 type Usage struct {
-	InputTokens  int
-	OutputTokens int
-	TotalTokens  int
+	InputTokens  int64
+	OutputTokens int64
+	TotalTokens  int64
+	CacheWrite   int64
+	CacheRead    int64
 }
 
 type ToolCall struct {
@@ -43,10 +45,22 @@ type ToolResult struct {
 	IsError bool
 }
 
+type System struct {
+	Stable      string
+	Environment string
+}
+
+type Request struct {
+	Messages []Message
+	Tools    []tools.Definition
+	System   System
+	Reminder string
+}
+
 type Provider interface {
 	Name() string
 	Model() string
-	Stream(ctx context.Context, msgs []Message, defs []tools.Definition) <-chan StreamEvent
+	Stream(ctx context.Context, req Request) <-chan StreamEvent
 }
 
 func New(cfg config.ProviderConfig) (Provider, error) {

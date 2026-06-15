@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -107,6 +108,39 @@ func TestDefaultRegistry(t *testing.T) {
 	}
 }
 
+func TestDefaultRegistryDescriptionsReinforceToolUseRules(t *testing.T) {
+	r, err := DefaultRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defs := r.Definitions()
+	first := namesOf(defs)
+	second := namesOf(r.Definitions())
+	if strings.Join(first, ",") != strings.Join(second, ",") {
+		t.Fatalf("definition order changed: %v vs %v", first, second)
+	}
+
+	descriptions := make(map[string]string, len(defs))
+	for _, def := range defs {
+		descriptions[def.Name] = strings.ToLower(def.Description)
+	}
+	checks := map[string][]string{
+		"read_file":   {"dedicated", "reading"},
+		"find_files":  {"prefer this", "shell commands"},
+		"search_code": {"prefer this", "shell commands"},
+		"edit_file":   {"before editing", "read_file", "unique"},
+		"write_file":  {"overwriting", "user-change risk"},
+		"run_command": {"prefer read_file", "find_files", "search_code", "build", "test"},
+	}
+	for name, parts := range checks {
+		for _, part := range parts {
+			if !strings.Contains(descriptions[name], part) {
+				t.Fatalf("%s description missing %q: %q", name, part, descriptions[name])
+			}
+		}
+	}
+}
+
 func TestRegistryDefinitionsBySafetyAndQueries(t *testing.T) {
 	r, err := DefaultRegistry()
 	if err != nil {
@@ -145,4 +179,12 @@ func TestResultJSON(t *testing.T) {
 	if !decoded.OK || decoded.Tool != "x" || decoded.Content != "hello" {
 		t.Fatalf("decoded = %+v", decoded)
 	}
+}
+
+func namesOf(defs []Definition) []string {
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		names = append(names, def.Name)
+	}
+	return names
 }

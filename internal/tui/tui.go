@@ -104,7 +104,7 @@ func New(providers []config.ProviderConfig, cwd string, registry *tools.Registry
 		registry:  registry,
 		toolEnv:   tools.DefaultEnv(cwd),
 	}
-	m.runner = agent.Runner{Registry: registry, Env: m.toolEnv, Config: agent.DefaultConfig()}
+	m.runner = agent.Runner{Registry: registry, Env: m.toolEnv, Config: agent.DefaultConfig(), Version: Version}
 
 	if len(providers) > 1 {
 		m.state = stateSelecting

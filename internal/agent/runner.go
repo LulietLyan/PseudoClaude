@@ -8,14 +8,18 @@ import (
 
 	"PseudoClaude/internal/conversation"
 	"PseudoClaude/internal/llm"
+	"PseudoClaude/internal/prompt"
 	"PseudoClaude/internal/tools"
 )
+
+const planReminderInterval = 4
 
 type Runner struct {
 	Provider llm.Provider
 	Registry *tools.Registry
 	Env      tools.Env
 	Config   Config
+	Version  string
 }
 
 type Config struct {
@@ -75,6 +79,8 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 
 	userText, defs, toolOpts := r.prepareRequest(req)
 	req.Conversation.AddUser(userText)
+	stableSystem := prompt.BuildSystemPrompt()
+	environment := prompt.GatherEnvironment(r.Version, r.Provider.Name(), r.Provider.Model(), r.Env.CWD).Render()
 	sendEvent(ctx, events, Event{Type: EventProgress, Message: "agent run started"})
 
 	unknownCount := 0
@@ -90,7 +96,16 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 		sendEvent(ctx, events, Event{Type: EventProgress, Iteration: iteration, Message: "requesting model"})
 
 		collector := &streamCollector{}
-		out, err := collector.collect(ctx, iteration, r.Provider.Stream(ctx, req.Conversation.Messages(), defs), events)
+		modelReq := llm.Request{
+			Messages: req.Conversation.Messages(),
+			Tools:    defs,
+			System: llm.System{
+				Stable:      stableSystem,
+				Environment: environment,
+			},
+			Reminder: reminderForMode(req.Mode, iteration),
+		}
+		out, err := collector.collect(ctx, iteration, r.Provider.Stream(ctx, modelReq), events)
 		if err != nil {
 			if ctx.Err() != nil {
 				sendStop(context.Background(), events, iteration, StopCanceled, "canceled")
@@ -179,6 +194,14 @@ Task:
 
 func doPrompt(task, plan string) string {
 	return fmt.Sprintf("Execution mode. Carry out the following task using the approved plan. Use the conversation history and tool results as context.\n\nOriginal task:\n%s\n\nPlan:\n%s", strings.TrimSpace(task), strings.TrimSpace(plan))
+}
+
+func reminderForMode(mode Mode, iteration int) string {
+	if mode != ModePlan {
+		return ""
+	}
+	full := iteration == 1 || (iteration-1)%planReminderInterval == 0
+	return prompt.PlanReminder(full)
 }
 
 func sendStop(ctx context.Context, events chan<- Event, iteration int, reason StopReason, message string) {

@@ -16,18 +16,16 @@ import (
 type fakeProvider struct {
 	mu       sync.Mutex
 	streams  [][]llm.StreamEvent
-	messages [][]llm.Message
-	defs     [][]tools.Definition
+	requests []llm.Request
 }
 
 func (f *fakeProvider) Name() string  { return "fake" }
 func (f *fakeProvider) Model() string { return "fake-model" }
 
-func (f *fakeProvider) Stream(_ context.Context, msgs []llm.Message, defs []tools.Definition) <-chan llm.StreamEvent {
+func (f *fakeProvider) Stream(_ context.Context, req llm.Request) <-chan llm.StreamEvent {
 	f.mu.Lock()
-	f.messages = append(f.messages, msgs)
-	f.defs = append(f.defs, defs)
-	index := len(f.messages) - 1
+	f.requests = append(f.requests, req)
+	index := len(f.requests) - 1
 	var events []llm.StreamEvent
 	if index < len(f.streams) {
 		events = f.streams[index]
@@ -46,7 +44,7 @@ type scriptedTool struct {
 	name    string
 	safety  tools.Safety
 	delay   time.Duration
-	order   *[]string
+	order   *recordedOrder
 	content string
 }
 
@@ -80,13 +78,30 @@ func (s scriptedTool) Execute(ctx context.Context, input json.RawMessage, env to
 		}
 	}
 	if s.order != nil {
-		*s.order = append(*s.order, s.name)
+		s.order.add(s.name)
 	}
 	content := s.content
 	if content == "" {
 		content = s.name + " ok"
 	}
 	return tools.Success(s.name, content, nil)
+}
+
+type recordedOrder struct {
+	mu    sync.Mutex
+	names []string
+}
+
+func (r *recordedOrder) add(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.names = append(r.names, name)
+}
+
+func (r *recordedOrder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.names...)
 }
 
 func collectEvents(ch <-chan Event) []Event {
@@ -159,8 +174,14 @@ func TestRunnerCompletesAfterMultipleToolRounds(t *testing.T) {
 	if stop.Reason != StopCompleted || stop.Iterations != 3 {
 		t.Fatalf("stop = %+v", stop)
 	}
-	if len(provider.messages) != 3 {
-		t.Fatalf("provider calls = %d, want 3", len(provider.messages))
+	if len(provider.requests) != 3 {
+		t.Fatalf("provider calls = %d, want 3", len(provider.requests))
+	}
+	if provider.requests[0].System.Stable == "" || provider.requests[0].System.Environment == "" {
+		t.Fatalf("system request = %+v", provider.requests[0].System)
+	}
+	if provider.requests[0].System.Stable != provider.requests[1].System.Stable {
+		t.Fatal("stable system prompt changed across rounds")
 	}
 	msgs := conv.Messages()
 	if len(msgs) != 6 {
@@ -180,10 +201,10 @@ func TestRunnerHandlesMultipleToolCallsInOrder(t *testing.T) {
 		},
 		{{Text: "done"}, {Done: true}},
 	}}
-	var order []string
+	order := &recordedOrder{}
 	registry, err := tools.NewRegistry(
-		scriptedTool{name: "slow_read", safety: tools.SafetyReadOnly, delay: 30 * time.Millisecond, order: &order},
-		scriptedTool{name: "fast_read", safety: tools.SafetyReadOnly, order: &order},
+		scriptedTool{name: "slow_read", safety: tools.SafetyReadOnly, delay: 30 * time.Millisecond, order: order},
+		scriptedTool{name: "fast_read", safety: tools.SafetyReadOnly, order: order},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -200,16 +221,17 @@ func TestRunnerHandlesMultipleToolCallsInOrder(t *testing.T) {
 	if msgs[2].ToolResult.CallID != "slow" || msgs[3].ToolResult.CallID != "fast" {
 		t.Fatalf("tool result order = %s, %s", msgs[2].ToolResult.CallID, msgs[3].ToolResult.CallID)
 	}
-	if len(order) != 2 || order[0] != "fast_read" || order[1] != "slow_read" {
-		t.Fatalf("expected concurrent completion order fast then slow, got %+v", order)
+	gotOrder := order.snapshot()
+	if len(gotOrder) != 2 || gotOrder[0] != "fast_read" || gotOrder[1] != "slow_read" {
+		t.Fatalf("expected concurrent completion order fast then slow, got %+v", gotOrder)
 	}
 }
 
 func TestSideEffectToolsRunSerially(t *testing.T) {
-	var order []string
+	order := &recordedOrder{}
 	registry, err := tools.NewRegistry(
-		scriptedTool{name: "write_a", safety: tools.SafetySideEffect, order: &order},
-		scriptedTool{name: "write_b", safety: tools.SafetySideEffect, order: &order},
+		scriptedTool{name: "write_a", safety: tools.SafetySideEffect, order: order},
+		scriptedTool{name: "write_b", safety: tools.SafetySideEffect, order: order},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -227,8 +249,9 @@ func TestSideEffectToolsRunSerially(t *testing.T) {
 	if len(results) != 2 || results[0].Call.ID != "a" || results[1].Call.ID != "b" {
 		t.Fatalf("results = %+v", results)
 	}
-	if len(order) != 2 || order[0] != "write_a" || order[1] != "write_b" {
-		t.Fatalf("order = %+v", order)
+	gotOrder := order.snapshot()
+	if len(gotOrder) != 2 || gotOrder[0] != "write_a" || gotOrder[1] != "write_b" {
+		t.Fatalf("order = %+v", gotOrder)
 	}
 }
 
@@ -280,8 +303,8 @@ func TestRunnerStopsAtMaxIterations(t *testing.T) {
 		Config:   Config{MaxIterations: 1},
 	}.Run(context.Background(), Request{UserText: "loop", Conversation: &conversation.Conversation{}}))
 	stop := lastStop(t, events)
-	if stop.Reason != StopMaxIterations || len(provider.messages) != 1 {
-		t.Fatalf("stop=%+v provider calls=%d", stop, len(provider.messages))
+	if stop.Reason != StopMaxIterations || len(provider.requests) != 1 {
+		t.Fatalf("stop=%+v provider calls=%d", stop, len(provider.requests))
 	}
 }
 
@@ -325,15 +348,88 @@ func TestRunnerPlanAndDoModesSelectToolsAndPrompt(t *testing.T) {
 	}
 	runner := Runner{Provider: provider, Registry: registry}
 	collectEvents(runner.Run(context.Background(), Request{Mode: ModePlan, PlanTask: "change x", Conversation: &conversation.Conversation{}}))
-	if len(provider.defs[0]) != 1 || provider.defs[0][0].Name != "read_file" {
-		t.Fatalf("plan defs = %+v", provider.defs[0])
+	if len(provider.requests[0].Tools) != 1 || provider.requests[0].Tools[0].Name != "read_file" {
+		t.Fatalf("plan defs = %+v", provider.requests[0].Tools)
 	}
 	collectEvents(runner.Run(context.Background(), Request{Mode: ModeDo, PlanTask: "change x", PlanText: "plan text", Conversation: &conversation.Conversation{}}))
-	if len(provider.defs[1]) != 2 {
-		t.Fatalf("do defs = %+v", provider.defs[1])
+	if len(provider.requests[1].Tools) != 2 {
+		t.Fatalf("do defs = %+v", provider.requests[1].Tools)
 	}
-	if got := provider.messages[1][0].Content; !containsAll(got, "change x", "plan text") {
+	if got := provider.requests[1].Messages[0].Content; !containsAll(got, "change x", "plan text") {
 		t.Fatalf("do prompt = %q", got)
+	}
+	if provider.requests[0].System.Stable == "" || provider.requests[1].System.Stable == "" || provider.requests[0].System.Stable != provider.requests[1].System.Stable {
+		t.Fatalf("stable prompts = %q / %q", provider.requests[0].System.Stable, provider.requests[1].System.Stable)
+	}
+	if !containsAll(provider.requests[0].System.Environment, "provider", "fake", "fake-model") {
+		t.Fatalf("environment = %q", provider.requests[0].System.Environment)
+	}
+	if !strings.Contains(provider.requests[0].Reminder, "You are in plan mode") {
+		t.Fatalf("plan reminder = %q", provider.requests[0].Reminder)
+	}
+	if provider.requests[1].Reminder != "" {
+		t.Fatalf("do reminder = %q", provider.requests[1].Reminder)
+	}
+}
+
+func TestPlanReminderFrequencyAndNotPersisted(t *testing.T) {
+	provider := &fakeProvider{streams: [][]llm.StreamEvent{
+		{{ToolCall: &llm.ToolCall{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{}`)}}, {Done: true}},
+		{{ToolCall: &llm.ToolCall{ID: "call_2", Name: "read_file", Arguments: json.RawMessage(`{}`)}}, {Done: true}},
+		{{ToolCall: &llm.ToolCall{ID: "call_3", Name: "read_file", Arguments: json.RawMessage(`{}`)}}, {Done: true}},
+		{{ToolCall: &llm.ToolCall{ID: "call_4", Name: "read_file", Arguments: json.RawMessage(`{}`)}}, {Done: true}},
+		{{Text: "plan ready"}, {Done: true}},
+	}}
+	registry, err := tools.NewRegistry(scriptedTool{name: "read_file", safety: tools.SafetyReadOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conv conversation.Conversation
+	events := collectEvents(Runner{Provider: provider, Registry: registry}.Run(context.Background(), Request{
+		Mode:         ModePlan,
+		PlanTask:     "inspect",
+		Conversation: &conv,
+	}))
+	if lastStop(t, events).Reason != StopCompleted {
+		t.Fatalf("events = %+v", events)
+	}
+	if len(provider.requests) != 5 {
+		t.Fatalf("provider calls = %d", len(provider.requests))
+	}
+	if !strings.Contains(provider.requests[0].Reminder, "You are in plan mode") {
+		t.Fatalf("round 1 reminder = %q", provider.requests[0].Reminder)
+	}
+	if !strings.Contains(provider.requests[1].Reminder, "Still in plan mode") {
+		t.Fatalf("round 2 reminder = %q", provider.requests[1].Reminder)
+	}
+	if !strings.Contains(provider.requests[4].Reminder, "You are in plan mode") {
+		t.Fatalf("round 5 reminder = %q", provider.requests[4].Reminder)
+	}
+	for _, msg := range conv.Messages() {
+		if strings.Contains(msg.Content, "<system-reminder>") {
+			t.Fatalf("reminder persisted in conversation: %+v", conv.Messages())
+		}
+	}
+}
+
+func TestRunnerTransmitsCacheUsage(t *testing.T) {
+	provider := &fakeProvider{streams: [][]llm.StreamEvent{{
+		{Usage: &llm.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 36, CacheWrite: 11, CacheRead: 22}},
+		{Text: "done"},
+		{Done: true},
+	}}}
+	events := collectEvents(Runner{Provider: provider, Registry: &tools.Registry{}}.Run(context.Background(), Request{
+		UserText:     "hi",
+		Conversation: &conversation.Conversation{},
+	}))
+	var usage *llm.Usage
+	for _, event := range events {
+		if event.Type == EventUsage {
+			usage = event.Usage
+		}
+	}
+	if usage == nil || usage.CacheWrite != 11 || usage.CacheRead != 22 {
+		t.Fatalf("usage = %+v events=%+v", usage, events)
 	}
 }
 

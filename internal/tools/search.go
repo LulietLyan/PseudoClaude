@@ -22,7 +22,7 @@ func NewSearchCodeTool() Tool { return searchCodeTool{} }
 func (findFilesTool) Definition() Definition {
 	return Definition{
 		Name:        "find_files",
-		Description: "Find files by glob pattern relative to the current workspace.",
+		Description: "Dedicated tool for finding files by glob pattern relative to the current workspace. Prefer this over shell commands for locating files.",
 		Safety:      SafetyReadOnly,
 		InputSchema: objectSchema(map[string]any{
 			"pattern": stringProp("Glob pattern, such as *.go or **/*.md."),
@@ -60,7 +60,7 @@ func (findFilesTool) Execute(ctx context.Context, input json.RawMessage, env Env
 func (searchCodeTool) Definition() Definition {
 	return Definition{
 		Name:        "search_code",
-		Description: "Search text or regex pattern in local text files and return file, line, and summary matches.",
+		Description: "Dedicated tool for searching text or regex patterns in local text files and returning file, line, and summary matches. Prefer this over shell commands for code or text search.",
 		Safety:      SafetyReadOnly,
 		InputSchema: objectSchema(map[string]any{
 			"pattern": stringProp("Text or regular expression to search for."),

@@ -16,7 +16,7 @@ func NewRunCommandTool() Tool { return runCommandTool{} }
 func (runCommandTool) Definition() Definition {
 	return Definition{
 		Name:        "run_command",
-		Description: "Run a local command in the current workspace and return stdout, stderr, and exit status.",
+		Description: "Run a local command in the current workspace and return stdout, stderr, and exit status. Prefer read_file, find_files, and search_code for reading, locating, or searching files; use commands for build, test, validation, or shell-only operations.",
 		Safety:      SafetySideEffect,
 		InputSchema: objectSchema(map[string]any{
 			"command": stringProp("Executable command name or path."),

@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"PseudoClaude/internal/tools"
@@ -24,17 +25,20 @@ func TestOpenAIToolDefinitionConversion(t *testing.T) {
 }
 
 func TestOpenAIMessagesIncludeToolHistory(t *testing.T) {
-	msgs := toOpenAIMessages([]Message{
-		{Role: "assistant", ToolCalls: []ToolCall{{
-			ID:        "call_1",
-			Name:      "read_file",
-			Arguments: json.RawMessage(`{"path":"README.md"}`),
-		}}},
-		{Role: "user", ToolResult: &ToolResult{
-			CallID:  "call_1",
-			Name:    "read_file",
-			Content: `{"ok":true}`,
-		}},
+	msgs := toOpenAIMessages(Request{
+		System: System{Stable: "stable"},
+		Messages: []Message{
+			{Role: "assistant", ToolCalls: []ToolCall{{
+				ID:        "call_1",
+				Name:      "read_file",
+				Arguments: json.RawMessage(`{"path":"README.md"}`),
+			}}},
+			{Role: "user", ToolResult: &ToolResult{
+				CallID:  "call_1",
+				Name:    "read_file",
+				Content: `{"ok":true}`,
+			}},
+		},
 	})
 	if len(msgs) != 3 {
 		t.Fatalf("message count = %d", len(msgs))
@@ -48,6 +52,40 @@ func TestOpenAIMessagesIncludeToolHistory(t *testing.T) {
 	}
 	if msgs[2].OfTool == nil || msgs[2].OfTool.ToolCallID != "call_1" {
 		t.Fatalf("tool result = %+v", msgs[2])
+	}
+}
+
+func TestOpenAIMessagesSystemEnvironmentAndReminder(t *testing.T) {
+	msgs := toOpenAIMessages(Request{
+		System:   System{Stable: "stable", Environment: "env"},
+		Messages: []Message{{Role: "user", Content: "hello"}},
+		Reminder: "<system-reminder>plan</system-reminder>",
+	})
+	if len(msgs) != 3 {
+		t.Fatalf("message count = %d", len(msgs))
+	}
+	if msgs[0].OfSystem == nil || !strings.Contains(msgs[0].OfSystem.Content.OfString.Value, "stable\n\nenv") {
+		t.Fatalf("system message = %+v", msgs[0])
+	}
+	if msgs[2].OfUser == nil || !strings.Contains(msgs[2].OfUser.Content.OfString.Value, "system-reminder") {
+		t.Fatalf("reminder message = %+v", msgs[2])
+	}
+}
+
+func TestOpenAIUsageMapsCachedTokens(t *testing.T) {
+	got := openAIUsageFromCompletionUsage(openai.CompletionUsage{
+		PromptTokens:     10,
+		CompletionTokens: 20,
+		TotalTokens:      30,
+		PromptTokensDetails: openai.CompletionUsagePromptTokensDetails{
+			CachedTokens: 7,
+		},
+	})
+	if got.InputTokens != 10 || got.OutputTokens != 20 || got.TotalTokens != 30 || got.CacheWrite != 0 || got.CacheRead != 7 {
+		t.Fatalf("usage = %+v", got)
+	}
+	if got := openAIUsageFromCompletionUsage(openai.CompletionUsage{}); got != nil {
+		t.Fatalf("empty usage = %+v", got)
 	}
 }
 

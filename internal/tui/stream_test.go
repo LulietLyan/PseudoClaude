@@ -117,13 +117,11 @@ func TestViewDoesNotInsertLargeGapBeforeInput(t *testing.T) {
 
 type fakeProvider struct {
 	events []llm.StreamEvent
-	defs   []tools.Definition
-	msgs   []llm.Message
 }
 
 func (f fakeProvider) Name() string  { return "fake" }
 func (f fakeProvider) Model() string { return "fake-model" }
-func (f fakeProvider) Stream(_ context.Context, msgs []llm.Message, defs []tools.Definition) <-chan llm.StreamEvent {
+func (f fakeProvider) Stream(_ context.Context, _ llm.Request) <-chan llm.StreamEvent {
 	ch := make(chan llm.StreamEvent, len(f.events))
 	for _, event := range f.events {
 		ch <- event
