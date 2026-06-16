@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"PseudoClaude/internal/agent"
+	"PseudoClaude/internal/permission"
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
@@ -27,6 +28,11 @@ func waitForAgentEvent(ch <-chan agent.Event) tea.Cmd {
 func (m Model) updateIdle(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		if msg.String() == "shift+tab" {
+			m.permissionMode = permission.NextMode(m.permissionMode)
+			m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "Permission mode: " + m.permissionMode.String()})
+			return m, nil
+		}
 		if msg.String() == "enter" {
 			text := strings.TrimSpace(m.textarea.Value())
 			if text == "" {
@@ -38,12 +44,14 @@ func (m Model) updateIdle(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if text == "/plan" {
 				m.planMode = true
 				m.textarea.Reset()
-				return m, tea.Println(statusMessageBlock("Plan Mode 已开启。接下来的输入会只使用只读工具；输入 /do 执行最近计划。"))
+				m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "Plan Mode 已开启。接下来的输入会只使用只读工具；输入 /do 执行最近计划。"})
+				return m, nil
 			}
 			if text == "/chat" || text == "/exit-plan" {
 				m.planMode = false
 				m.textarea.Reset()
-				return m, tea.Println(statusMessageBlock("Plan Mode 已关闭。"))
+				m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "Plan Mode 已关闭。"})
+				return m, nil
 			}
 			return m.submit(text)
 		}
@@ -56,11 +64,13 @@ func (m Model) updateIdle(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) submit(text string) (tea.Model, tea.Cmd) {
 	if m.provider == nil {
-		return m, tea.Println(errorBlock(fmt.Errorf("provider 尚未初始化")))
+		m.appendTranscript(transcriptEntry{kind: transcriptError, text: "provider 尚未初始化"})
+		return m, nil
 	}
 	req, printable, err := m.requestForInput(text)
 	if err != nil {
-		return m, tea.Println(errorBlock(err))
+		m.appendTranscript(transcriptEntry{kind: transcriptError, text: err.Error()})
+		return m, nil
 	}
 	if strings.HasPrefix(text, "/plan") {
 		m.planMode = true
@@ -71,6 +81,7 @@ func (m Model) submit(text string) (tea.Model, tea.Cmd) {
 	m.runner.Provider = m.provider
 	m.runner.Registry = m.registry
 	m.runner.Env = m.toolEnv
+	m.runner.Permission = m.permissionEngine
 	m.events = m.runner.Run(ctx, req)
 	m.turnStart = time.Now()
 	m.elapsed = 0
@@ -81,9 +92,9 @@ func (m Model) submit(text string) (tea.Model, tea.Cmd) {
 	m.lastStop = nil
 	m.textarea.Reset()
 	m.state = stateStreaming
+	m.appendTranscript(transcriptEntry{kind: transcriptUser, text: printable})
 
 	return m, tea.Batch(
-		tea.Println(userBlock(printable)),
 		waitForAgentEvent(m.events),
 		m.spinner.Tick,
 	)
@@ -96,16 +107,16 @@ func (m Model) requestForInput(text string) (agent.Request, string, error) {
 		if task == "" {
 			return agent.Request{}, "", fmt.Errorf("/plan 后面需要任务内容")
 		}
-		return agent.Request{Mode: agent.ModePlan, PlanTask: task, Conversation: m.conv}, "/plan " + task, nil
+		return agent.Request{Mode: agent.ModePlan, PlanTask: task, PermissionMode: m.permissionMode, Conversation: m.conv}, "/plan " + task, nil
 	case text == "/do":
 		if m.lastPlan == nil || strings.TrimSpace(m.lastPlan.text) == "" {
 			return agent.Request{}, "", fmt.Errorf("没有可执行的最近计划，请先使用 /plan <任务>")
 		}
-		return agent.Request{Mode: agent.ModeDo, PlanTask: m.lastPlan.task, PlanText: m.lastPlan.text, Conversation: m.conv}, "/do", nil
+		return agent.Request{Mode: agent.ModeDo, PlanTask: m.lastPlan.task, PlanText: m.lastPlan.text, PermissionMode: m.permissionMode, Conversation: m.conv}, "/do", nil
 	case m.planMode:
-		return agent.Request{Mode: agent.ModePlan, PlanTask: text, Conversation: m.conv}, text, nil
+		return agent.Request{Mode: agent.ModePlan, PlanTask: text, PermissionMode: m.permissionMode, Conversation: m.conv}, text, nil
 	default:
-		return agent.Request{Mode: agent.ModeChat, UserText: text, Conversation: m.conv}, text, nil
+		return agent.Request{Mode: agent.ModeChat, UserText: text, PermissionMode: m.permissionMode, Conversation: m.conv}, text, nil
 	}
 }
 
@@ -124,7 +135,8 @@ func (m Model) updateStreaming(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = stateIdle
 			m.curTool = nil
 			m.progress = "canceled"
-			return m, tea.Batch(m.textarea.Focus(), tea.Println(stopBlock(agent.Stop{Reason: agent.StopCanceled, Message: "canceled"})))
+			m.appendTranscript(transcriptEntry{kind: transcriptStop, stop: agent.Stop{Reason: agent.StopCanceled, Message: "canceled"}})
+			return m, m.textarea.Focus()
 		}
 		return m, nil
 	}
@@ -159,17 +171,89 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 			if m.curTool != nil && m.curTool.call.ID == event.ToolResult.Call.ID {
 				m.curTool.result = &result
 			}
-			return m, tea.Batch(tea.Println(toolResultBlock(result, event.ToolResult.Elapsed)), waitForAgentEvent(m.events))
+			m.appendTranscript(transcriptEntry{kind: transcriptTool, result: result, elapsed: event.ToolResult.Elapsed})
+			return m, waitForAgentEvent(m.events)
 		}
 		return m, waitForAgentEvent(m.events)
 	case agent.EventToolCallDone:
 		return m, waitForAgentEvent(m.events)
+	case agent.EventApproval:
+		if event.Approval != nil {
+			m.pendingApproval = event.Approval
+			m.approvalCursor = 0
+			m.state = stateApproving
+			return m, nil
+		}
+		return m, waitForAgentEvent(m.events)
 	case agent.EventError:
-		return m, tea.Batch(tea.Println(errorBlock(event.Err)), waitForAgentEvent(m.events))
+		if event.Err != nil {
+			m.appendTranscript(transcriptEntry{kind: transcriptError, text: event.Err.Error()})
+		}
+		return m, waitForAgentEvent(m.events)
 	case agent.EventStop:
 		return m.finishAgentRun(event)
 	default:
 		return m, waitForAgentEvent(m.events)
+	}
+}
+
+func (m Model) updateApproving(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "up", "k":
+			if m.approvalCursor > 0 {
+				m.approvalCursor--
+			}
+			return m, nil
+		case "down", "j":
+			if m.approvalCursor < len(approvalChoices)-1 {
+				m.approvalCursor++
+			}
+			return m, nil
+		case "enter", " ":
+			return m.finishApproval(approvalChoices[m.approvalCursor].decision)
+		case "1":
+			return m.finishApproval(permission.ApprovalAllowOnce)
+		case "2":
+			return m.finishApproval(permission.ApprovalAllowSession)
+		case "3":
+			return m.finishApproval(permission.ApprovalAllowForever)
+		case "4":
+			return m.finishApproval(permission.ApprovalDenyOnce)
+		case "esc":
+			m.stopStream()
+			return m.finishApproval(permission.ApprovalDenyOnce)
+		}
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		m.elapsed = time.Since(m.turnStart)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m Model) finishApproval(decision permission.ApprovalDecision) (tea.Model, tea.Cmd) {
+	req := m.pendingApproval
+	m.pendingApproval = nil
+	m.approvalCursor = 0
+	m.state = stateStreaming
+	var cmds []tea.Cmd
+	if req != nil {
+		cmds = append(cmds, sendApprovalDecision(req, decision))
+	}
+	cmds = append(cmds, waitForAgentEvent(m.events), m.spinner.Tick)
+	return m, tea.Batch(cmds...)
+}
+
+func sendApprovalDecision(req *agent.ApprovalRequest, decision permission.ApprovalDecision) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case req.Respond <- decision:
+		default:
+		}
+		return nil
 	}
 }
 
@@ -185,10 +269,10 @@ func (m Model) finishAgentRun(event agent.Event) (tea.Model, tea.Cmd) {
 	reply := m.curReply
 	var cmds []tea.Cmd
 	if strings.TrimSpace(reply) != "" {
-		cmds = append(cmds, tea.Println(assistantBlock(reply, m.elapsed, m.renderer)))
+		m.appendTranscript(transcriptEntry{kind: transcriptAssistant, text: reply, elapsed: m.elapsed})
 	}
 	if event.Stop != nil && event.Stop.Reason != agent.StopCompleted {
-		cmds = append(cmds, tea.Println(stopBlock(*event.Stop)))
+		m.appendTranscript(transcriptEntry{kind: transcriptStop, stop: *event.Stop})
 	}
 	if event.Stop != nil && event.Stop.Reason == agent.StopCompleted {
 		m.saveOrClearPlan(reply)

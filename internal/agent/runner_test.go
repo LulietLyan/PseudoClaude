@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +12,7 @@ import (
 
 	"PseudoClaude/internal/conversation"
 	"PseudoClaude/internal/llm"
+	"PseudoClaude/internal/permission"
 	"PseudoClaude/internal/tools"
 )
 
@@ -241,7 +244,7 @@ func TestSideEffectToolsRunSerially(t *testing.T) {
 		{ID: "b", Name: "write_b", Arguments: json.RawMessage(`{}`)},
 	}
 	events := make(chan Event, 16)
-	results, err := executeToolCalls(context.Background(), registry, tools.Env{}, 1, calls, events, toolExecutionOptions{})
+	results, err := executeToolCalls(context.Background(), registry, tools.Env{}, 1, calls, events, toolExecutionOptions{}, nil, "")
 	close(events)
 	if err != nil {
 		t.Fatal(err)
@@ -289,6 +292,242 @@ func TestPlanModeRejectsSideEffectToolIfModelRequestsIt(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected tool_not_allowed result in messages: %+v", msgs)
+	}
+}
+
+func TestPermissionBlacklistDeniesWithoutExecutingAndLoops(t *testing.T) {
+	provider := &fakeProvider{streams: [][]llm.StreamEvent{
+		{{ToolCall: &llm.ToolCall{ID: "danger", Name: "run_command", Arguments: json.RawMessage(`{"command":"rm","args":["-rf","/"]}`)}}, {Done: true}},
+		{{Text: "safer plan"}, {Done: true}},
+	}}
+	executed := false
+	registry, err := tools.NewRegistry(fakeExecTool{name: "run_command", safety: tools.SafetySideEffect, executed: &executed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := newTestPermissionEngine(t)
+	var conv conversation.Conversation
+	events := collectEvents(Runner{Provider: provider, Registry: registry, Permission: engine}.Run(context.Background(), Request{
+		UserText:       "run dangerous command",
+		PermissionMode: permission.ModeBypassPermissions,
+		Conversation:   &conv,
+	}))
+	if lastStop(t, events).Reason != StopCompleted || len(provider.requests) != 2 {
+		t.Fatalf("events=%+v provider calls=%d", events, len(provider.requests))
+	}
+	if executed {
+		t.Fatal("dangerous command executed")
+	}
+	var found bool
+	for _, msg := range conv.Messages() {
+		if msg.ToolResult != nil && msg.ToolResult.IsError && strings.Contains(msg.ToolResult.Content, "blacklist") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing blacklist tool result: %+v", conv.Messages())
+	}
+}
+
+func TestPermissionApprovalAllowAndDeny(t *testing.T) {
+	call := llm.ToolCall{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"path":"a.txt","content":"x"}`)}
+	for _, tc := range []struct {
+		name     string
+		decision permission.ApprovalDecision
+		wantExec bool
+		wantErr  bool
+	}{
+		{"allow once", permission.ApprovalAllowOnce, true, false},
+		{"deny once", permission.ApprovalDenyOnce, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &fakeProvider{streams: [][]llm.StreamEvent{
+				{{ToolCall: &call}, {Done: true}},
+				{{Text: "done"}, {Done: true}},
+			}}
+			executed := false
+			registry, _ := tools.NewRegistry(fakeExecTool{name: "write_file", safety: tools.SafetySideEffect, executed: &executed})
+			engine := newTestPermissionEngine(t)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			eventsCh := Runner{Provider: provider, Registry: registry, Permission: engine}.Run(ctx, Request{
+				UserText:       "write",
+				PermissionMode: permission.ModeDefault,
+				Conversation:   &conversation.Conversation{},
+			})
+			var events []Event
+			for event := range eventsCh {
+				events = append(events, event)
+				if event.Type == EventApproval && event.Approval != nil {
+					event.Approval.Respond <- tc.decision
+				}
+			}
+			if lastStop(t, events).Reason != StopCompleted {
+				t.Fatalf("events=%+v", events)
+			}
+			if executed != tc.wantExec {
+				t.Fatalf("executed=%v want %v", executed, tc.wantExec)
+			}
+			var sawPermissionDenied bool
+			for _, event := range events {
+				if event.ToolResult != nil && event.ToolResult.Result.ErrorType == "permission_denied" {
+					sawPermissionDenied = true
+				}
+			}
+			if sawPermissionDenied != tc.wantErr {
+				t.Fatalf("permission denied event=%v want %v", sawPermissionDenied, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestPermissionDefaultAsksForWriteAndBash(t *testing.T) {
+	cases := []llm.ToolCall{
+		{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"path":"a.txt","content":"x"}`)},
+		{ID: "bash", Name: "run_command", Arguments: json.RawMessage(`{"command":"git","args":["status"]}`)},
+	}
+	for _, call := range cases {
+		t.Run(call.Name, func(t *testing.T) {
+			registry, _ := tools.NewRegistry(
+				fakeExecTool{name: "write_file", safety: tools.SafetySideEffect},
+				fakeExecTool{name: "run_command", safety: tools.SafetySideEffect},
+			)
+			events := make(chan Event, 8)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan []ToolResult, 1)
+			go func() {
+				results, _ := executeToolCalls(ctx, registry, tools.Env{}, 1, []llm.ToolCall{call}, events, toolExecutionOptions{}, newTestPermissionEngine(t), permission.ModeDefault)
+				done <- results
+			}()
+			waitForEvent(t, events, EventToolCallStart)
+			event := waitForEvent(t, events, EventApproval)
+			if event.Approval == nil {
+				t.Fatalf("approval event missing request: %+v", event)
+			}
+			event.Approval.Respond <- permission.ApprovalDenyOnce
+			select {
+			case results := <-done:
+				if len(results) != 1 || results[0].Result.ErrorType != "permission_denied" {
+					t.Fatalf("results = %+v", results)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for denial result")
+			}
+		})
+	}
+}
+
+func TestPermissionApprovalSessionAndForever(t *testing.T) {
+	call := llm.ToolCall{ID: "cmd", Name: "run_command", Arguments: json.RawMessage(`{"command":"git","args":["status"]}`)}
+	for _, tc := range []struct {
+		name     string
+		decision permission.ApprovalDecision
+		wantFile bool
+	}{
+		{"session", permission.ApprovalAllowSession, false},
+		{"forever", permission.ApprovalAllowForever, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			local := filepath.Join(root, ".PseudoClaude", "permissions.local.yaml")
+			engine, err := permission.NewEngine(root, permission.Options{LocalPath: local})
+			if err != nil {
+				t.Fatal(err)
+			}
+			executed := false
+			registry, _ := tools.NewRegistry(fakeExecTool{name: "run_command", safety: tools.SafetySideEffect, executed: &executed})
+			events := make(chan Event, 8)
+			resultCh := make(chan ToolResult, 1)
+			go func() {
+				resultCh <- executeOneTool(context.Background(), registry, tools.Env{}, 1, call, events, toolExecutionOptions{}, engine, permission.ModeDefault)
+			}()
+			select {
+			case event := <-events:
+				if event.Type != EventToolCallStart {
+					t.Fatalf("first event = %+v", event)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("missing start event")
+			}
+			event := <-events
+			if event.Type != EventApproval || event.Approval == nil {
+				t.Fatalf("event = %+v", event)
+			}
+			event.Approval.Respond <- tc.decision
+			select {
+			case result := <-resultCh:
+				if !result.Result.OK {
+					t.Fatalf("result = %+v", result)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for approved tool")
+			}
+			if !executed {
+				t.Fatal("tool did not execute after approval")
+			}
+			got := engine.Check(permission.ModeDefault, call, tools.SafetySideEffect)
+			if got.Decision != permission.DecisionAllow {
+				t.Fatalf("allow not reusable: %+v", got)
+			}
+			_, statErr := os.Stat(local)
+			if tc.wantFile && statErr != nil {
+				t.Fatalf("expected local file: %v", statErr)
+			}
+			if !tc.wantFile && !os.IsNotExist(statErr) {
+				t.Fatalf("session approval wrote local file: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestPermissionMixedResultsPreserveOrder(t *testing.T) {
+	registry, _ := tools.NewRegistry(
+		scriptedTool{name: "read_file", safety: tools.SafetyReadOnly, content: "read ok"},
+		scriptedTool{name: "run_command", safety: tools.SafetySideEffect, content: "cmd ok"},
+	)
+	calls := []llm.ToolCall{
+		{ID: "read", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)},
+		{ID: "danger", Name: "run_command", Arguments: json.RawMessage(`{"command":"rm","args":["-rf","/"]}`)},
+	}
+	events := make(chan Event, 16)
+	results, err := executeToolCalls(context.Background(), registry, tools.Env{}, 1, calls, events, toolExecutionOptions{}, newTestPermissionEngine(t), permission.ModeDefault)
+	close(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results[0].Call.ID != "read" || results[1].Call.ID != "danger" {
+		t.Fatalf("results order = %+v", results)
+	}
+	if !results[0].Result.OK || results[1].Result.ErrorType != "permission_denied" {
+		t.Fatalf("results = %+v", results)
+	}
+}
+
+func TestPermissionApprovalCanBeCanceled(t *testing.T) {
+	registry, _ := tools.NewRegistry(fakeExecTool{name: "write_file", safety: tools.SafetySideEffect})
+	call := llm.ToolCall{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"path":"a.txt","content":"x"}`)}
+	events := make(chan Event, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := executeToolCalls(ctx, registry, tools.Env{}, 1, []llm.ToolCall{call}, events, toolExecutionOptions{}, newTestPermissionEngine(t), permission.ModeDefault)
+		done <- err
+	}()
+	for {
+		event := <-events
+		if event.Type == EventApproval {
+			cancel()
+			break
+		}
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected cancellation error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for cancellation")
 	}
 }
 
@@ -459,4 +698,28 @@ func containsAll(s string, parts ...string) bool {
 		}
 	}
 	return true
+}
+
+func newTestPermissionEngine(t *testing.T) *permission.Engine {
+	t.Helper()
+	engine, err := permission.NewEngine(t.TempDir(), permission.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return engine
+}
+
+func waitForEvent(t *testing.T, events <-chan Event, eventType EventType) Event {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event.Type == eventType {
+				return event
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", eventType)
+		}
+	}
 }

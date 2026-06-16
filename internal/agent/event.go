@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"PseudoClaude/internal/llm"
+	"PseudoClaude/internal/permission"
 	"PseudoClaude/internal/tools"
 )
 
@@ -24,6 +25,7 @@ const (
 	EventToolCallStart EventType = "tool_call_start"
 	EventToolCallDone  EventType = "tool_call_done"
 	EventToolResult    EventType = "tool_result"
+	EventApproval      EventType = "approval"
 	EventUsage         EventType = "usage"
 	EventStop          EventType = "stop"
 	EventError         EventType = "error"
@@ -46,6 +48,7 @@ type Event struct {
 	Message    string
 	ToolCall   *llm.ToolCall
 	ToolResult *ToolResult
+	Approval   *ApprovalRequest
 	Usage      *llm.Usage
 	Stop       *Stop
 	Err        error
@@ -61,4 +64,12 @@ type ToolResult struct {
 	Call    llm.ToolCall
 	Result  tools.Result
 	Elapsed time.Duration
+}
+
+type ApprovalRequest struct {
+	Call    llm.ToolCall
+	Summary string
+	Reason  string
+	Result  permission.CheckResult
+	Respond chan permission.ApprovalDecision
 }

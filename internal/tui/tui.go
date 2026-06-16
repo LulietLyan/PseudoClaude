@@ -8,6 +8,7 @@ import (
 	"PseudoClaude/internal/config"
 	"PseudoClaude/internal/conversation"
 	"PseudoClaude/internal/llm"
+	"PseudoClaude/internal/permission"
 	"PseudoClaude/internal/tools"
 
 	"charm.land/bubbles/v2/list"
@@ -25,35 +26,42 @@ const (
 	stateSelecting sessionState = iota
 	stateIdle
 	stateStreaming
+	stateApproving
 )
 
 type Model struct {
-	state     sessionState
-	textarea  textarea.Model
-	spinner   spinner.Model
-	list      list.Model
-	renderer  *glamour.TermRenderer
-	providers []config.ProviderConfig
-	provider  llm.Provider
-	conv      *conversation.Conversation
-	runner    agent.Runner
-	events    <-chan agent.Event
-	cancel    context.CancelFunc
-	curReply  string
-	curTool   *toolStatus
-	progress  string
-	usage     *llm.Usage
-	lastStop  *agent.Stop
-	lastPlan  *planState
-	planMode  bool
-	turnStart time.Time
-	elapsed   time.Duration
-	width     int
-	height    int
-	initErr   error
-	cwd       string
-	registry  *tools.Registry
-	toolEnv   tools.Env
+	state            sessionState
+	textarea         textarea.Model
+	spinner          spinner.Model
+	list             list.Model
+	renderer         *glamour.TermRenderer
+	providers        []config.ProviderConfig
+	provider         llm.Provider
+	conv             *conversation.Conversation
+	runner           agent.Runner
+	events           <-chan agent.Event
+	cancel           context.CancelFunc
+	curReply         string
+	curTool          *toolStatus
+	transcript       []transcriptEntry
+	progress         string
+	usage            *llm.Usage
+	lastStop         *agent.Stop
+	lastPlan         *planState
+	planMode         bool
+	permissionMode   permission.Mode
+	permissionEngine *permission.Engine
+	pendingApproval  *agent.ApprovalRequest
+	approvalCursor   int
+	showBanner       bool
+	turnStart        time.Time
+	elapsed          time.Duration
+	width            int
+	height           int
+	initErr          error
+	cwd              string
+	registry         *tools.Registry
+	toolEnv          tools.Env
 }
 
 type toolStatus struct {
@@ -67,7 +75,26 @@ type planState struct {
 	text string
 }
 
-func New(providers []config.ProviderConfig, cwd string, registry *tools.Registry) Model {
+type transcriptKind int
+
+const (
+	transcriptUser transcriptKind = iota
+	transcriptAssistant
+	transcriptTool
+	transcriptStatus
+	transcriptError
+	transcriptStop
+)
+
+type transcriptEntry struct {
+	kind    transcriptKind
+	text    string
+	elapsed time.Duration
+	result  tools.Result
+	stop    agent.Stop
+}
+
+func New(providers []config.ProviderConfig, cwd string, registry *tools.Registry, engine ...*permission.Engine) Model {
 	ta := textarea.New()
 	ta.Prompt = "❯ "
 	ta.Placeholder = "Send a message..."
@@ -89,22 +116,33 @@ func New(providers []config.ProviderConfig, cwd string, registry *tools.Registry
 			registry = &tools.Registry{}
 		}
 	}
+	var permissionEngine *permission.Engine
+	if len(engine) > 0 {
+		permissionEngine = engine[0]
+	}
+	permissionMode := permission.ModeDefault
+	if permissionEngine != nil {
+		permissionMode = permissionEngine.StartMode()
+	}
 
 	m := Model{
-		state:     stateIdle,
-		textarea:  ta,
-		spinner:   sp,
-		renderer:  renderer,
-		providers: providers,
-		conv:      &conversation.Conversation{},
-		width:     80,
-		height:    24,
-		initErr:   err,
-		cwd:       cwd,
-		registry:  registry,
-		toolEnv:   tools.DefaultEnv(cwd),
+		state:            stateIdle,
+		textarea:         ta,
+		spinner:          sp,
+		renderer:         renderer,
+		providers:        providers,
+		conv:             &conversation.Conversation{},
+		width:            80,
+		height:           24,
+		initErr:          err,
+		cwd:              cwd,
+		registry:         registry,
+		toolEnv:          tools.DefaultEnv(cwd),
+		permissionMode:   permissionMode,
+		permissionEngine: permissionEngine,
+		showBanner:       true,
 	}
-	m.runner = agent.Runner{Registry: registry, Env: m.toolEnv, Config: agent.DefaultConfig(), Version: Version}
+	m.runner = agent.Runner{Registry: registry, Env: m.toolEnv, Config: agent.DefaultConfig(), Version: Version, Permission: permissionEngine}
 
 	if len(providers) > 1 {
 		m.state = stateSelecting
@@ -123,9 +161,9 @@ func New(providers []config.ProviderConfig, cwd string, registry *tools.Registry
 
 func (m Model) Init() tea.Cmd {
 	if m.state == stateSelecting {
-		return tea.Batch(m.list.StartSpinner(), tea.Println(m.bannerView()))
+		return m.list.StartSpinner()
 	}
-	return tea.Batch(m.textarea.Focus(), tea.Println(m.bannerView()))
+	return m.textarea.Focus()
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -138,6 +176,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleResize(msg), nil
 	case tea.KeyPressMsg:
 		if msg.String() == "ctrl+c" {
+			if m.state == stateApproving {
+				m.stopStream()
+				next, cmd := m.finishApproval(permission.ApprovalDenyOnce)
+				return next, cmd
+			}
 			m.stopStream()
 			return m, tea.Quit
 		}
@@ -148,6 +191,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateSelecting(msg)
 	case stateStreaming:
 		return m.updateStreaming(msg)
+	case stateApproving:
+		return m.updateApproving(msg)
 	default:
 		return m.updateIdle(msg)
 	}
@@ -165,7 +210,7 @@ func (m Model) Run() error {
 func (m Model) handleResize(msg tea.WindowSizeMsg) Model {
 	m.width = msg.Width
 	m.height = msg.Height
-	contentWidth := max(20, msg.Width-4)
+	contentWidth := m.contentWidth()
 	m.textarea.SetWidth(contentWidth)
 	if m.state == stateSelecting {
 		m.list.SetSize(contentWidth, max(8, msg.Height-8))

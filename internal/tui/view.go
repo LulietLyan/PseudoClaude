@@ -7,6 +7,7 @@ import (
 
 	"PseudoClaude/internal/agent"
 	"PseudoClaude/internal/llm"
+	"PseudoClaude/internal/permission"
 	"PseudoClaude/internal/prompt"
 	"PseudoClaude/internal/tools"
 
@@ -15,28 +16,66 @@ import (
 )
 
 var (
+	columnStyle = lipgloss.NewStyle().
+			Align(lipgloss.Left)
 	inputBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("240")).
-			Padding(0, 1)
+			BorderForeground(lipgloss.Color("63")).
+			Padding(0, 2)
 	statusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("244"))
+			Foreground(lipgloss.Color("244")).
+			Padding(0, 1)
 	errorStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("203"))
-	userStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("81"))
-	assistantStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252"))
+	userFrameStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("81")).
+			Foreground(lipgloss.Color("231")).
+			Padding(0, 2)
+	assistantFrameStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("114")).
+				Foreground(lipgloss.Color("252")).
+				Padding(1, 2)
+	statusFrameStyle = lipgloss.NewStyle().
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("244")).
+				Foreground(lipgloss.Color("244")).
+				Padding(0, 2)
+	errorFrameStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("203")).
+			Foreground(lipgloss.Color("203")).
+			Padding(0, 2)
 	streamStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252"))
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("63")).
+			Foreground(lipgloss.Color("252")).
+			Padding(0, 2)
 	toolStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("220"))
+	toolFrameStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("220")).
+			Foreground(lipgloss.Color("229")).
+			Padding(0, 2)
 	toolOKStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("114"))
 	toolErrorStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("203"))
+	approvalStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("220")).
+			Padding(0, 1)
+	approvalSelectedStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("220")).
+				Bold(true)
 	logoStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("220"))
+	bannerFrameStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("240")).
+				Padding(1, 3)
 	bannerTitleStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("81")).
 				Bold(true)
@@ -49,17 +88,29 @@ func (m Model) view() string {
 		return errorStyle.Render("● " + m.initErr.Error())
 	}
 	if m.state == stateSelecting {
+		if m.showBanner {
+			return strings.Join([]string{m.bannerView(), m.list.View()}, "\n\n")
+		}
 		return m.list.View()
 	}
 
+	columnWidth := m.contentWidth()
 	parts := make([]string, 0, 4)
+	if m.showBanner {
+		parts = append(parts, m.bannerView())
+	}
+	if len(m.transcript) > 0 {
+		parts = append(parts, m.centeredColumn(m.transcriptView(columnWidth)))
+	}
 	if m.state == stateStreaming {
-		parts = append(parts, m.streamingView())
+		parts = append(parts, m.centeredColumn(m.streamingView(columnWidth)))
+	}
+	if m.state == stateApproving {
+		parts = append(parts, m.centeredColumn(m.streamingView(columnWidth)), m.centeredColumn(m.approvalBlock(columnWidth)))
 	}
 
-	inputWidth := max(20, m.width-2)
-	parts = append(parts, inputBoxStyle.Width(inputWidth-2).Render(m.textarea.View()))
-	parts = append(parts, m.statusBar())
+	parts = append(parts, m.centeredColumn(inputBoxStyle.Width(columnWidth).Render(m.textarea.View())))
+	parts = append(parts, m.centeredColumn(m.statusBar(columnWidth)))
 	content := strings.Join(parts, "\n")
 	if m.height <= 0 {
 		return content
@@ -67,24 +118,74 @@ func (m Model) view() string {
 	return spaceBeforeInput(parts, m.height)
 }
 
-func (m Model) bannerView() string {
-	width := max(20, m.width-4)
-	height := max(1, m.height)
-	logo := prompt.SelectLogo(width, height)
-	lines := make([]string, 0, 9)
-	for _, line := range strings.Split(logo, "\n") {
-		lines = append(lines, centerLine(logoStyle.Render(strings.TrimRight(line, " ")), width))
-	}
-	lines = append(lines,
-		centerLine(bannerTitleStyle.Render("PseudoClaude v"+Version), width),
-		centerLine(bannerMetaStyle.Render(fitLine("cwd: "+m.cwd, width)), width),
-		centerLine(bannerMetaStyle.Render("Ready. Start a conversation when you are."), width),
-	)
-	return strings.Join(lines, "\n")
+func (m Model) contentWidth() int {
+	terminalWidth := max(20, m.width)
+	return clamp((terminalWidth*9)/10, 28, max(28, terminalWidth-4))
 }
 
-func (m Model) streamingView() string {
-	reply := softWrap(m.curReply, max(20, m.width-4))
+func (m Model) centeredColumn(content string) string {
+	width := max(20, m.width)
+	return lipgloss.NewStyle().Width(width).Align(lipgloss.Center).Render(columnStyle.Width(m.contentWidth()).Render(content))
+}
+
+func (m *Model) appendTranscript(entry transcriptEntry) {
+	if entry.kind != transcriptTool && strings.TrimSpace(entry.text) == "" && entry.stop.Reason == "" {
+		return
+	}
+	m.transcript = append(m.transcript, entry)
+	const maxTranscriptBlocks = 80
+	if len(m.transcript) > maxTranscriptBlocks {
+		m.transcript = append([]transcriptEntry(nil), m.transcript[len(m.transcript)-maxTranscriptBlocks:]...)
+	}
+}
+
+func (m Model) transcriptView(width int) string {
+	blocks := make([]string, 0, len(m.transcript))
+	for _, entry := range m.transcript {
+		blocks = append(blocks, m.renderTranscriptEntry(entry, width))
+	}
+	return strings.Join(blocks, "\n\n")
+}
+
+func (m Model) renderTranscriptEntry(entry transcriptEntry, width int) string {
+	switch entry.kind {
+	case transcriptUser:
+		return userBlock(entry.text, width)
+	case transcriptAssistant:
+		return assistantBlock(entry.text, entry.elapsed, width, m.renderer)
+	case transcriptTool:
+		return toolResultBlock(entry.result, entry.elapsed, width)
+	case transcriptError:
+		return errorBlockString(entry.text, width)
+	case transcriptStop:
+		return stopBlock(entry.stop, width)
+	default:
+		return statusMessageBlock(entry.text, width)
+	}
+}
+
+func (m Model) bannerView() string {
+	terminalWidth := max(20, m.width)
+	frameWidth := clamp(terminalWidth-4, 24, 96)
+	contentWidth := max(20, frameWidth-8)
+	height := max(1, m.height)
+	logo := prompt.SelectLogo(contentWidth, height)
+	lines := make([]string, 0, 9)
+	for _, line := range strings.Split(logo, "\n") {
+		lines = append(lines, centerLine(logoStyle.Render(strings.TrimRight(line, " ")), contentWidth))
+	}
+	lines = append(lines,
+		"",
+		centerLine(bannerTitleStyle.Render("PseudoClaude v"+Version), contentWidth),
+		centerLine(bannerMetaStyle.Render(fitLine("cwd: "+m.cwd, contentWidth)), contentWidth),
+		centerLine(bannerMetaStyle.Render("Ready. Shift+Tab cycles permission mode."), contentWidth),
+	)
+	panel := bannerFrameStyle.Width(frameWidth).Render(strings.Join(lines, "\n"))
+	return lipgloss.NewStyle().Width(terminalWidth).Align(lipgloss.Center).Render(panel)
+}
+
+func (m Model) streamingView(width int) string {
+	reply := softWrap(m.curReply, max(20, width-6))
 	label := m.progress
 	if label == "" {
 		label = "Imagining..."
@@ -101,39 +202,99 @@ func (m Model) streamingView() string {
 		lines = append(lines, usageLine(*m.usage))
 	}
 	lines = append(lines, "● "+timer)
-	return streamStyle.Render(strings.Join(lines, "\n"))
+	return streamStyle.Width(width).Render(strings.Join(lines, "\n"))
 }
 
-func (m Model) statusBar() string {
-	left := "No provider"
+func (m Model) statusBar(width int) string {
+	width = max(3, width)
+	left := permissionModeLabel(m.permissionMode)
 	right := ""
 	if m.provider != nil {
-		left = m.provider.Name()
 		right = m.provider.Model()
 	}
 	if m.planMode {
-		left += " · PLAN"
+		left += " · PLAN WORKFLOW"
 	}
 	if m.lastStop != nil && m.lastStop.Reason != "" {
 		left += " · " + string(m.lastStop.Reason)
 	}
-	width := max(20, m.width)
-	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
+	innerWidth := max(1, width-2)
+	leftWidth := lipgloss.Width(left)
+	if leftWidth >= innerWidth {
+		return statusStyle.Width(width).Render(fitLine(left, innerWidth))
+	}
+	maxRight := innerWidth - leftWidth - 1
+	if maxRight < 0 {
+		maxRight = 0
+	}
+	right = fitLine(right, maxRight)
+	gap := innerWidth - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
 	}
-	return statusStyle.Width(width).Render(left + strings.Repeat(" ", gap) + right)
+	line := left + strings.Repeat(" ", gap) + right
+	if lipgloss.Width(line) > innerWidth {
+		line = fitLine(line, innerWidth)
+	}
+	return statusStyle.Width(width).Render(line)
 }
 
-func userBlock(text string) string {
-	return userStyle.Render("● " + text)
+type approvalChoice struct {
+	label    string
+	decision permission.ApprovalDecision
 }
 
-func statusMessageBlock(message string) string {
-	return statusStyle.Render("● " + message)
+var approvalChoices = []approvalChoice{
+	{"1 Allow once", permission.ApprovalAllowOnce},
+	{"2 Allow session", permission.ApprovalAllowSession},
+	{"3 Allow forever", permission.ApprovalAllowForever},
+	{"4 Deny once", permission.ApprovalDenyOnce},
 }
 
-func assistantBlock(reply string, elapsed time.Duration, renderer *glamour.TermRenderer) string {
+func (m Model) approvalBlock(width int) string {
+	req := m.pendingApproval
+	if req == nil {
+		return ""
+	}
+	innerWidth := max(20, width-6)
+	lines := []string{
+		"Permission required",
+		"Tool: " + req.Call.Name,
+		"Target: " + fitLine(req.Summary, innerWidth),
+		"Reason: " + fitLine(req.Reason, innerWidth),
+	}
+	for i, choice := range approvalChoices {
+		line := "  " + choice.label
+		if i == m.approvalCursor {
+			line = approvalSelectedStyle.Render("> " + choice.label)
+		}
+		lines = append(lines, line)
+	}
+	return approvalStyle.Width(width).Render(strings.Join(lines, "\n"))
+}
+
+func permissionModeLabel(mode permission.Mode) string {
+	switch mode {
+	case permission.ModeStrict:
+		return "STRICT"
+	case permission.ModeAcceptEdits:
+		return "ACCEPT EDITS"
+	case permission.ModeBypassPermissions:
+		return "BYPASS"
+	default:
+		return "DEFAULT"
+	}
+}
+
+func userBlock(text string, width int) string {
+	return userFrameStyle.Width(width).Render("You\n" + text)
+}
+
+func statusMessageBlock(message string, width int) string {
+	return statusFrameStyle.Width(width).Render(message)
+}
+
+func assistantBlock(reply string, elapsed time.Duration, width int, renderer *glamour.TermRenderer) string {
 	rendered := strings.TrimSpace(reply)
 	if renderer != nil && rendered != "" {
 		if out, err := renderer.Render(reply); err == nil {
@@ -143,22 +304,32 @@ func assistantBlock(reply string, elapsed time.Duration, renderer *glamour.TermR
 	if rendered == "" {
 		rendered = "(empty response)"
 	}
-	return assistantStyle.Render(fmt.Sprintf("● %s\nDone in %.1fs", rendered, elapsed.Seconds()))
+	return assistantFrameStyle.Width(width).Render(fmt.Sprintf("Assistant\n%s\n\nDone in %.1fs", rendered, elapsed.Seconds()))
 }
 
 func errorBlock(err error) string {
 	if err == nil {
-		return errorStyle.Render("● Error")
+		return errorBlockString("Error", 0)
 	}
-	return errorStyle.Render("● Error: " + err.Error())
+	return errorBlockString(err.Error(), 0)
 }
 
-func stopBlock(stop agent.Stop) string {
+func errorBlockString(message string, width int) string {
+	if strings.TrimSpace(message) == "" {
+		message = "Error"
+	}
+	if width <= 0 {
+		return errorFrameStyle.Render("Error\n" + message)
+	}
+	return errorFrameStyle.Width(width).Render("Error\n" + message)
+}
+
+func stopBlock(stop agent.Stop, width int) string {
 	message := stop.Message
 	if message == "" {
 		message = string(stop.Reason)
 	}
-	return statusStyle.Render(fmt.Sprintf("● Stop: %s (%s)", message, stop.Reason))
+	return statusMessageBlock(fmt.Sprintf("Stop: %s (%s)", message, stop.Reason), width)
 }
 
 func toolCallBlock(call llm.ToolCall) string {
@@ -169,21 +340,21 @@ func toolCallBlock(call llm.ToolCall) string {
 	return toolStyle.Render(fmt.Sprintf("  ↳ Tool: %s (%s)", call.Name, id))
 }
 
-func toolResultBlock(result tools.Result, elapsed time.Duration) string {
+func toolResultBlock(result tools.Result, elapsed time.Duration, width int) string {
 	if result.OK {
 		content := strings.TrimSpace(result.Content)
 		if content == "" {
 			content = "ok"
 		}
 		content, _ = truncateForDisplay(content, 800)
-		return toolOKStyle.Render(fmt.Sprintf("  ✓ Tool: %s completed in %.1fs\n  %s", result.Tool, elapsed.Seconds(), indentContinuation(content, "  ")))
+		return toolFrameStyle.Width(width).BorderForeground(lipgloss.Color("114")).Render(fmt.Sprintf("Tool · %s · %.1fs\n%s", result.Tool, elapsed.Seconds(), indentContinuation(toolOKStyle.Render(content), "  ")))
 	}
 	message := result.Error
 	if message == "" {
 		message = result.ErrorType
 	}
 	message, _ = truncateForDisplay(message, 800)
-	return toolErrorStyle.Render(fmt.Sprintf("  × Tool: %s failed in %.1fs [%s]\n  %s", result.Tool, elapsed.Seconds(), result.ErrorType, indentContinuation(message, "  ")))
+	return toolFrameStyle.Width(width).BorderForeground(lipgloss.Color("203")).Render(fmt.Sprintf("Tool · %s · %.1fs · %s\n%s", result.Tool, elapsed.Seconds(), result.ErrorType, indentContinuation(toolErrorStyle.Render(message), "  ")))
 }
 
 func toolProgressLine(status toolStatus, elapsed time.Duration) string {
@@ -246,14 +417,27 @@ func centerLine(s string, width int) string {
 	return strings.Repeat(" ", gap/2) + s
 }
 
+func clamp(value, minValue, maxValue int) int {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
 func fitLine(s string, width int) string {
-	if width <= 0 || lipgloss.Width(s) <= width {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= width {
 		return s
 	}
 	prefix := "..."
 	available := width - lipgloss.Width(prefix)
 	if available <= 0 {
-		return prefix
+		return prefix[:width]
 	}
 	runes := []rune(s)
 	var out []rune

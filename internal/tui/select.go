@@ -52,11 +52,13 @@ func (m Model) updateSelecting(msg tea.Msg) (tea.Model, tea.Cmd) {
 			provider, err := llm.New(item.cfg)
 			if err != nil {
 				m.state = stateIdle
-				return m, tea.Println(errorBlock(fmt.Errorf("provider 初始化失败: %w", err)))
+				m.appendTranscript(transcriptEntry{kind: transcriptError, text: fmt.Sprintf("provider 初始化失败: %v", err)})
+				return m, nil
 			}
 			m.provider = provider
 			m.runner.Provider = provider
 			m.state = stateIdle
+			m.showBanner = true
 			return m, m.textarea.Focus()
 		}
 	}

@@ -8,6 +8,7 @@ import (
 
 	"PseudoClaude/internal/conversation"
 	"PseudoClaude/internal/llm"
+	"PseudoClaude/internal/permission"
 	"PseudoClaude/internal/prompt"
 	"PseudoClaude/internal/tools"
 )
@@ -15,11 +16,12 @@ import (
 const planReminderInterval = 4
 
 type Runner struct {
-	Provider llm.Provider
-	Registry *tools.Registry
-	Env      tools.Env
-	Config   Config
-	Version  string
+	Provider   llm.Provider
+	Registry   *tools.Registry
+	Env        tools.Env
+	Config     Config
+	Version    string
+	Permission *permission.Engine
 }
 
 type Config struct {
@@ -28,11 +30,12 @@ type Config struct {
 }
 
 type Request struct {
-	Mode         Mode
-	UserText     string
-	PlanTask     string
-	PlanText     string
-	Conversation *conversation.Conversation
+	Mode           Mode
+	UserText       string
+	PlanTask       string
+	PlanText       string
+	PermissionMode permission.Mode
+	Conversation   *conversation.Conversation
 }
 
 func DefaultConfig() Config {
@@ -78,6 +81,14 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 	}
 
 	userText, defs, toolOpts := r.prepareRequest(req)
+	permissionMode := req.PermissionMode
+	if permissionMode == "" {
+		if r.Permission != nil {
+			permissionMode = r.Permission.StartMode()
+		} else {
+			permissionMode = permission.ModeDefault
+		}
+	}
 	req.Conversation.AddUser(userText)
 	stableSystem := prompt.BuildSystemPrompt()
 	environment := prompt.GatherEnvironment(r.Version, r.Provider.Name(), r.Provider.Model(), r.Env.CWD).Render()
@@ -127,7 +138,7 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 		}
 
 		req.Conversation.AddAssistantToolCalls(out.ToolCalls)
-		results, err := executeToolCalls(ctx, r.Registry, r.Env, iteration, out.ToolCalls, events, toolOpts)
+		results, err := executeToolCalls(ctx, r.Registry, r.Env, iteration, out.ToolCalls, events, toolOpts, r.Permission, permissionMode)
 		for _, result := range results {
 			req.Conversation.AddToolResult(llm.ToolResult{
 				CallID:  result.Call.ID,

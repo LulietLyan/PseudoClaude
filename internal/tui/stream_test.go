@@ -2,18 +2,21 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"PseudoClaude/internal/agent"
 	"PseudoClaude/internal/config"
 	"PseudoClaude/internal/llm"
+	"PseudoClaude/internal/permission"
 	"PseudoClaude/internal/tools"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 )
 
 func TestNewStartsTextareaFocusedAndAcceptsInput(t *testing.T) {
@@ -48,10 +51,13 @@ func TestBannerCentersFileLogoAndMeta(t *testing.T) {
 	model.width = 90
 	model.height = 24
 	banner := model.bannerView()
+	if !strings.Contains(banner, "╭") || !strings.Contains(banner, "╯") {
+		t.Fatalf("banner missing frame: %q", banner)
+	}
 	if !strings.Contains(banner, "██████╗") {
 		t.Fatalf("banner missing file logo: %q", banner)
 	}
-	if !strings.Contains(banner, "PseudoClaude v"+Version) || !strings.Contains(banner, "Ready. Start") {
+	if !strings.Contains(banner, "PseudoClaude v"+Version) || !strings.Contains(banner, "Ready. Shift+Tab") {
 		t.Fatalf("banner missing centered meta lines: %q", banner)
 	}
 	lines := strings.Split(banner, "\n")
@@ -60,21 +66,43 @@ func TestBannerCentersFileLogoAndMeta(t *testing.T) {
 	}
 }
 
-func TestViewDoesNotRedrawBannerWhileTypingOrAfterReply(t *testing.T) {
+func TestBannerFrameCentersOnWideTerminal(t *testing.T) {
+	model := New(nil, "/tmp/pseudoclaude", nil)
+	model.width = 160
+	model.height = 40
+	banner := model.bannerView()
+	lines := strings.Split(banner, "\n")
+	if len(lines) == 0 {
+		t.Fatal("banner has no lines")
+	}
+	if got := lipgloss.Width(lines[0]); got != model.width {
+		t.Fatalf("banner line width = %d, want %d: %q", got, model.width, lines[0])
+	}
+	leftPad := strings.Index(lines[0], "╭")
+	if leftPad <= 20 {
+		t.Fatalf("frame not visually centered on wide terminal, left pad=%d line=%q", leftPad, lines[0])
+	}
+}
+
+func TestBannerRerendersWhileIdleAndAfterReply(t *testing.T) {
 	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
 	model.width = 90
 	model.height = 24
 	next, _ := model.updateIdle(tea.KeyPressMsg{Code: 'h', Text: "h"})
 	model = next.(Model)
 	view := model.view()
-	if strings.Contains(view, "██████╗") {
-		t.Fatalf("banner should not be part of redraw view while typing: %q", view)
+	if !strings.Contains(view, "██████╗") {
+		t.Fatalf("banner should rerender while idle/typing: %q", view)
+	}
+	model = model.handleResize(tea.WindowSizeMsg{Width: 160, Height: 40})
+	view = model.view()
+	lines := strings.Split(view, "\n")
+	if len(lines) == 0 || lipgloss.Width(lines[0]) != 160 {
+		t.Fatalf("banner should use resized terminal width: %q", view)
 	}
 
-	model.provider = fakeProvider{events: []llm.StreamEvent{{Text: "hello"}, {Done: true}}}
-	model.runner.Provider = model.provider
-	next, _ = model.submit("hi")
-	model = next.(Model)
+	model.state = stateStreaming
+	model.turnStart = time.Now()
 	next, _ = model.updateStreaming(agentMsg{Type: agent.EventTextDelta, Text: "hello"})
 	model = next.(Model)
 	next, _ = model.updateStreaming(agentMsg{Type: agent.EventStop, Stop: &agent.Stop{Reason: agent.StopCompleted}})
@@ -83,17 +111,33 @@ func TestViewDoesNotRedrawBannerWhileTypingOrAfterReply(t *testing.T) {
 		t.Fatalf("state = %v, want idle", model.state)
 	}
 	view = model.view()
-	if strings.Contains(view, "██████╗") {
-		t.Fatalf("banner should not be redrawn after assistant reply: %q", view)
+	if !strings.Contains(view, "██████╗") {
+		t.Fatalf("banner should remain visible after reply: %q", view)
+	}
+}
+
+func TestTranscriptRendersAfterBanner(t *testing.T) {
+	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
+	model.width = 120
+	model.appendTranscript(transcriptEntry{kind: transcriptUser, text: "hello"})
+	model.appendTranscript(transcriptEntry{kind: transcriptAssistant, text: "world", elapsed: time.Second})
+	view := model.view()
+	bannerIndex := strings.Index(view, "PseudoClaude v"+Version)
+	userIndex := strings.Index(view, "hello")
+	assistantIndex := strings.Index(view, "world")
+	if bannerIndex < 0 || userIndex < 0 || assistantIndex < 0 {
+		t.Fatalf("view missing expected blocks: %q", view)
+	}
+	if !(bannerIndex < userIndex && userIndex < assistantIndex) {
+		t.Fatalf("transcript should render after banner: banner=%d user=%d assistant=%d view=%q", bannerIndex, userIndex, assistantIndex, view)
 	}
 }
 
 func TestStreamingTextDeltasDoNotPanicAfterModelCopies(t *testing.T) {
 	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
-	model.provider = fakeProvider{events: []llm.StreamEvent{{Text: "hello"}, {Done: true}}}
-	model.runner.Provider = model.provider
-	next, _ := model.submit("hi")
-	model = next.(Model)
+	model.state = stateStreaming
+	model.turnStart = time.Now()
+	var next tea.Model
 
 	next, _ = model.updateStreaming(agentMsg{Type: agent.EventTextDelta, Text: "hel"})
 	model = next.(Model)
@@ -117,10 +161,16 @@ func TestViewDoesNotInsertLargeGapBeforeInput(t *testing.T) {
 
 type fakeProvider struct {
 	events []llm.StreamEvent
+	model  string
 }
 
-func (f fakeProvider) Name() string  { return "fake" }
-func (f fakeProvider) Model() string { return "fake-model" }
+func (f fakeProvider) Name() string { return "fake" }
+func (f fakeProvider) Model() string {
+	if f.model != "" {
+		return f.model
+	}
+	return "fake-model"
+}
 func (f fakeProvider) Stream(_ context.Context, _ llm.Request) <-chan llm.StreamEvent {
 	ch := make(chan llm.StreamEvent, len(f.events))
 	for _, event := range f.events {
@@ -140,11 +190,9 @@ func TestAgentEventToolResultReturnsIdleAfterStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	model := New([]config.ProviderConfig{}, dir, registry)
-	model.provider = fakeProvider{events: []llm.StreamEvent{{ToolCall: &llm.ToolCall{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{"path":"note.txt"}`)}}, {Text: "done"}, {Done: true}}}
-	model.runner.Provider = model.provider
-
-	next, _ := model.submit("read")
-	model = next.(Model)
+	model.state = stateStreaming
+	model.turnStart = time.Now()
+	var next tea.Model
 	next, _ = model.updateStreaming(agentMsg{Type: agent.EventToolCallStart, ToolCall: &llm.ToolCall{ID: "call_1", Name: "read_file"}})
 	model = next.(Model)
 	result := tools.Success("read_file", "hello", nil)
@@ -216,5 +264,157 @@ func TestPlanStateSavedAndCleared(t *testing.T) {
 	model.saveOrClearPlan("done")
 	if model.lastPlan != nil {
 		t.Fatalf("lastPlan should be cleared: %+v", model.lastPlan)
+	}
+}
+
+func TestPermissionModeSwitchAndRequest(t *testing.T) {
+	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
+	if model.permissionMode != permission.ModeDefault {
+		t.Fatalf("initial mode = %s", model.permissionMode)
+	}
+	want := []permission.Mode{permission.ModeAcceptEdits, permission.ModeBypassPermissions, permission.ModeStrict, permission.ModeDefault}
+	for _, mode := range want {
+		next, _ := model.updateIdle(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: uv.ModShift}))
+		model = next.(Model)
+		if model.permissionMode != mode {
+			t.Fatalf("mode = %s, want %s", model.permissionMode, mode)
+		}
+	}
+	model.permissionMode = permission.ModeAcceptEdits
+	req, _, err := model.requestForInput("hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.PermissionMode != permission.ModeAcceptEdits {
+		t.Fatalf("request permission mode = %s", req.PermissionMode)
+	}
+	req, _, err = model.requestForInput("/plan inspect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.PermissionMode != permission.ModeAcceptEdits || req.Mode != agent.ModePlan {
+		t.Fatalf("plan request = %+v", req)
+	}
+}
+
+func TestApprovalInteraction(t *testing.T) {
+	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
+	model.state = stateStreaming
+	model.turnStart = time.Now()
+	req := &agent.ApprovalRequest{
+		Call:    llm.ToolCall{ID: "call", Name: "write_file"},
+		Summary: "note.txt",
+		Reason:  "default mode requires ask",
+		Result:  permission.CheckResult{Decision: permission.DecisionAsk, Source: "mode"},
+		Respond: make(chan permission.ApprovalDecision, 1),
+	}
+	next, cmd := model.handleAgentEvent(agent.Event{Type: agent.EventApproval, Approval: req})
+	model = next.(Model)
+	if cmd != nil || model.state != stateApproving || model.pendingApproval != req {
+		t.Fatalf("approval state=%v pending=%v cmd=%v", model.state, model.pendingApproval != nil, cmd)
+	}
+	next, _ = model.updateApproving(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	model = next.(Model)
+	if model.approvalCursor != 1 {
+		t.Fatalf("cursor = %d", model.approvalCursor)
+	}
+	next, cmd = model.updateApproving(tea.KeyPressMsg{Code: '3', Text: "3"})
+	model = next.(Model)
+	if model.state != stateStreaming || model.pendingApproval != nil {
+		t.Fatalf("state=%v pending=%v", model.state, model.pendingApproval)
+	}
+	if cmd == nil {
+		t.Fatal("expected approval command")
+	}
+	runCmd(sendApprovalDecision(req, permission.ApprovalAllowForever))
+	select {
+	case got := <-req.Respond:
+		if got != permission.ApprovalAllowForever {
+			t.Fatalf("decision = %s", got)
+		}
+	default:
+		t.Fatal("missing approval decision")
+	}
+}
+
+func runCmd(cmd tea.Cmd) {
+	if cmd == nil {
+		return
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, inner := range batch {
+			runCmd(inner)
+		}
+	}
+}
+
+func TestStatusBarShowsPermissionMode(t *testing.T) {
+	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
+	model.provider = fakeProvider{}
+	model.permissionMode = permission.ModeStrict
+	model.planMode = true
+	status := model.statusBar(model.contentWidth())
+	if !strings.Contains(status, "STRICT") || !strings.Contains(status, "PLAN WORKFLOW") {
+		t.Fatalf("status missing mode/plan: %q", status)
+	}
+	if strings.Contains(status, " fake ") {
+		t.Fatalf("status should not show provider name: %q", status)
+	}
+}
+
+func TestStatusBarTruncatesLongModelName(t *testing.T) {
+	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
+	model.width = 80
+	model.provider = fakeProvider{model: strings.Repeat("very-long-model-name-", 8)}
+	status := model.statusBar(40)
+	if lipgloss.Height(status) != 1 {
+		t.Fatalf("status should stay on one line: %q", status)
+	}
+	for _, line := range strings.Split(status, "\n") {
+		if lipgloss.Width(line) > 40 {
+			t.Fatalf("status line overflow width=%d: %q", lipgloss.Width(line), line)
+		}
+	}
+}
+
+func TestStatusBarDoesNotWrapAtNarrowWidths(t *testing.T) {
+	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
+	model.width = 24
+	model.provider = fakeProvider{model: strings.Repeat("oversized-model-name-", 6)}
+	model.permissionMode = permission.ModeBypassPermissions
+	model.planMode = true
+	model.lastStop = &agent.Stop{Reason: "max_tokens"}
+	status := model.statusBar(18)
+	if lipgloss.Height(status) != 1 {
+		t.Fatalf("status should stay on one line: %q", status)
+	}
+	if lipgloss.Width(status) > 18 {
+		t.Fatalf("status overflow width=%d: %q", lipgloss.Width(status), status)
+	}
+}
+
+func TestInputAndStatusUseCenteredColumn(t *testing.T) {
+	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
+	model.width = 140
+	if got, want := model.contentWidth(), 126; got != want {
+		t.Fatalf("content width = %d, want %d", got, want)
+	}
+	view := model.view()
+	lines := strings.Split(view, "\n")
+	var inputLine, statusLine string
+	for _, line := range lines {
+		if strings.Contains(line, "╭") && strings.Contains(line, "─") && !strings.Contains(line, "PseudoClaude") {
+			inputLine = line
+		}
+		if strings.Contains(line, "DEFAULT") {
+			statusLine = line
+		}
+	}
+	if strings.Index(inputLine, "╭") <= 10 {
+		t.Fatalf("input should be centered away from edge: %q", inputLine)
+	}
+	if strings.Index(statusLine, "DEFAULT") <= 10 {
+		t.Fatalf("status should be centered away from edge: %q", statusLine)
 	}
 }
