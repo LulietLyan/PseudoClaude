@@ -9,18 +9,51 @@ import (
 type Conversation struct {
 	mu       sync.Mutex
 	messages []llm.Message
+	hooks    Hooks
+}
+
+type ReplaceReason string
+
+const (
+	ReplaceReasonSnapshot ReplaceReason = "snapshot"
+	ReplaceReasonCompact  ReplaceReason = "compact"
+)
+
+type Hooks struct {
+	OnAppend  func(llm.Message)
+	OnReplace func(ReplaceReason, []llm.Message)
+}
+
+func New(hooks Hooks) *Conversation {
+	return &Conversation{hooks: hooks}
+}
+
+func NewFromMessages(messages []llm.Message, hooks Hooks) *Conversation {
+	return &Conversation{messages: copyMessages(messages), hooks: hooks}
+}
+
+func (c *Conversation) SetHooks(hooks Hooks) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.hooks = hooks
 }
 
 func (c *Conversation) AddUser(text string) {
+	msg := llm.Message{Role: "user", Content: text}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.messages = append(c.messages, llm.Message{Role: "user", Content: text})
+	c.messages = append(c.messages, msg)
+	hook := c.hooks.OnAppend
+	c.mu.Unlock()
+	callAppendHook(hook, msg)
 }
 
 func (c *Conversation) AddAssistant(text string) {
+	msg := llm.Message{Role: "assistant", Content: text}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.messages = append(c.messages, llm.Message{Role: "assistant", Content: text})
+	c.messages = append(c.messages, msg)
+	hook := c.hooks.OnAppend
+	c.mu.Unlock()
+	callAppendHook(hook, msg)
 }
 
 func (c *Conversation) AddAssistantToolCall(call llm.ToolCall) {
@@ -31,17 +64,22 @@ func (c *Conversation) AddAssistantToolCalls(calls []llm.ToolCall) {
 	if len(calls) == 0 {
 		return
 	}
+	msg := llm.Message{Role: "assistant", ToolCalls: append([]llm.ToolCall(nil), calls...)}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	copyCalls := append([]llm.ToolCall(nil), calls...)
-	c.messages = append(c.messages, llm.Message{Role: "assistant", ToolCalls: copyCalls})
+	c.messages = append(c.messages, msg)
+	hook := c.hooks.OnAppend
+	c.mu.Unlock()
+	callAppendHook(hook, msg)
 }
 
 func (c *Conversation) AddToolResult(result llm.ToolResult) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	copyResult := result
-	c.messages = append(c.messages, llm.Message{Role: "user", ToolResult: &copyResult})
+	msg := llm.Message{Role: "user", ToolResult: &copyResult}
+	c.mu.Lock()
+	c.messages = append(c.messages, msg)
+	hook := c.hooks.OnAppend
+	c.mu.Unlock()
+	callAppendHook(hook, msg)
 }
 
 func (c *Conversation) Messages() []llm.Message {
@@ -50,10 +88,13 @@ func (c *Conversation) Messages() []llm.Message {
 	return copyMessages(c.messages)
 }
 
-func (c *Conversation) ReplaceMessages(messages []llm.Message) {
+func (c *Conversation) ReplaceMessages(reason ReplaceReason, messages []llm.Message) {
+	copied := copyMessages(messages)
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.messages = copyMessages(messages)
+	c.messages = copied
+	hook := c.hooks.OnReplace
+	c.mu.Unlock()
+	callReplaceHook(hook, reason, copied)
 }
 
 func (c *Conversation) Len() int {
@@ -75,4 +116,18 @@ func copyMessages(messages []llm.Message) []llm.Message {
 		}
 	}
 	return out
+}
+
+func callAppendHook(hook func(llm.Message), msg llm.Message) {
+	if hook == nil {
+		return
+	}
+	hook(copyMessages([]llm.Message{msg})[0])
+}
+
+func callReplaceHook(hook func(ReplaceReason, []llm.Message), reason ReplaceReason, messages []llm.Message) {
+	if hook == nil {
+		return
+	}
+	hook(reason, copyMessages(messages))
 }

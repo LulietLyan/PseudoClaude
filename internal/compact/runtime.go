@@ -1,15 +1,11 @@
 package compact
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
 	"PseudoClaude/internal/llm"
+	"PseudoClaude/internal/session"
 )
 
 type Runtime struct {
@@ -53,25 +49,39 @@ type ReplacementLedger struct {
 }
 
 func NewRuntime(workspace string, contextWindow int64) (*Runtime, error) {
-	id := newSessionID()
-	root := filepath.Join(workspace, ".PseudoClaude", "sessions", id)
-	spill := filepath.Join(root, "tool-results")
-	if err := os.MkdirAll(spill, 0o755); err != nil {
+	ctx, err := session.NewContext(workspace, time.Now())
+	if err != nil {
 		return nil, err
 	}
-	return &Runtime{
-		session:       Session{ID: id, RootDir: root, SpillDir: spill},
-		replacements:  ReplacementLedger{seen: make(map[string]ReplacementDecision), replacements: make(map[string]string)},
-		contextWindow: contextWindow,
-	}, nil
+	return newRuntimeFromContext(ctx, contextWindow), nil
 }
 
-func newSessionID() string {
-	var b [4]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return fmt.Sprintf("%d-%d", time.Now().Unix(), time.Now().UnixNano())
+func OpenRuntime(workspace, sessionID string, contextWindow int64) (*Runtime, error) {
+	ctx, err := session.OpenContext(workspace, sessionID)
+	if err != nil {
+		return nil, err
 	}
-	return fmt.Sprintf("%d-%s", time.Now().Unix(), hex.EncodeToString(b[:]))
+	return newRuntimeFromContext(ctx, contextWindow), nil
+}
+
+func newRuntimeFromContext(ctx session.Context, contextWindow int64) *Runtime {
+	return &Runtime{
+		session:       Session{ID: ctx.ID, RootDir: ctx.Dir, SpillDir: ctx.SpillDir},
+		replacements:  ReplacementLedger{seen: make(map[string]ReplacementDecision), replacements: make(map[string]string)},
+		contextWindow: contextWindow,
+	}
+}
+
+func (r *Runtime) SwitchSession(session Session) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.session = session
+	r.replacements = ReplacementLedger{seen: make(map[string]ReplacementDecision), replacements: make(map[string]string)}
+	r.usageAnchor = UsageAnchor{}
+	r.autoFailures = 0
 }
 
 func (r *Runtime) SetContextWindow(tokens int64) {

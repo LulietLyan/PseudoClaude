@@ -48,7 +48,7 @@ func ManageContext(ctx context.Context, in ManageInput) (ManageOutput, error) {
 
 	layer1 := OffloadToolResults(messages, in.Runtime)
 	if layer1.Changed {
-		in.Conversation.ReplaceMessages(layer1.Messages)
+		in.Conversation.ReplaceMessages(conversation.ReplaceReasonSnapshot, layer1.Messages)
 		output.TriggeredLayer1 = true
 		output.OffloadedCount = layer1.OffloadedCount
 		resetAnchorToEstimate(in.Runtime, in.Conversation)
@@ -100,7 +100,7 @@ func compactConversation(ctx context.Context, in ManageInput, safetyMargin int64
 	}
 	recent := SelectRecent(in.Conversation.Messages())
 	next := buildCompactedMessages(summary, recent)
-	in.Conversation.ReplaceMessages(next)
+	in.Conversation.ReplaceMessages(conversation.ReplaceReasonCompact, next)
 	after := EstimateMessages(next)
 	in.Runtime.ResetUsageAnchor(after, in.Conversation.Len())
 	return ManageOutput{TriggeredLayer2: true, BeforeTokens: before, AfterTokens: after}, nil
