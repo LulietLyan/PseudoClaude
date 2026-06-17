@@ -4,10 +4,15 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"time"
 
 	"PseudoClaude/internal/config"
+	"PseudoClaude/internal/instructions"
 	"PseudoClaude/internal/mcp"
+	"PseudoClaude/internal/memory"
 	"PseudoClaude/internal/permission"
+	"PseudoClaude/internal/session"
 	"PseudoClaude/internal/tools"
 	"PseudoClaude/internal/tui"
 )
@@ -23,6 +28,15 @@ func main() {
 	if err != nil {
 		cwd = "."
 	}
+	home, _ := os.UserHomeDir()
+	instructionResult := instructions.NewLoader(cwd).Load()
+	memoryManager := memory.NewManager(memory.DefaultProjectDir(cwd), memory.DefaultUserDir(home))
+	memoryManager.RefreshIndex()
+	go func() {
+		for _, err := range session.CleanExpired(cwd, time.Now()) {
+			fmt.Fprintf(os.Stderr, "会话清理提示: %v\n", err)
+		}
+	}()
 	permissionEngine, err := permission.NewEngine(cwd, permission.DefaultOptions(cwd))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "权限系统初始化错误: %v\n", err)
@@ -64,7 +78,20 @@ func main() {
 	mcpStatus := fmt.Sprintf("MCP: %d/%d connected, %d registered",
 		mcpStats.Connected, mcpStats.Configured, mcpStats.Registered)
 
-	model := tui.New(cfg.Providers, cwd, registry, permissionEngine).WithStartupStatus(mcpStatus)
+	var startup []string
+	startup = append(startup, mcpStatus)
+	if len(instructionResult.Loaded) > 0 {
+		startup = append(startup, fmt.Sprintf("Instructions: %d loaded", len(instructionResult.Loaded)))
+	}
+	for _, warning := range instructionResult.Warnings {
+		startup = append(startup, "Instruction warning: "+warning)
+	}
+	if filepath.IsAbs(memory.DefaultProjectDir(cwd)) {
+		startup = append(startup, "Memory: index loaded")
+	}
+	model := tui.New(cfg.Providers, cwd, registry, permissionEngine).
+		WithPersistentContext(instructionResult.Content, memoryManager).
+		WithStartupStatus(startup...)
 	if err := model.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "运行错误: %v\n", err)
 		os.Exit(1)

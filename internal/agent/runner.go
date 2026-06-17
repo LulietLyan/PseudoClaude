@@ -9,6 +9,7 @@ import (
 	"PseudoClaude/internal/compact"
 	"PseudoClaude/internal/conversation"
 	"PseudoClaude/internal/llm"
+	"PseudoClaude/internal/memory"
 	"PseudoClaude/internal/permission"
 	"PseudoClaude/internal/prompt"
 	"PseudoClaude/internal/tools"
@@ -17,13 +18,20 @@ import (
 const planReminderInterval = 4
 
 type Runner struct {
-	Provider   llm.Provider
-	Registry   *tools.Registry
-	Env        tools.Env
-	Config     Config
-	Version    string
-	Permission *permission.Engine
-	Compact    *compact.Runtime
+	Provider     llm.Provider
+	Registry     *tools.Registry
+	Env          tools.Env
+	Config       Config
+	Version      string
+	Permission   *permission.Engine
+	Compact      *compact.Runtime
+	Instructions string
+	Memory       MemoryUpdater
+}
+
+type MemoryUpdater interface {
+	IndexText() string
+	UpdateAsync(context.Context, memory.UpdateInput)
 }
 
 type Config struct {
@@ -83,6 +91,7 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 	}
 
 	userText, defs, toolOpts := r.prepareRequest(req)
+	startLen := req.Conversation.Len()
 	permissionMode := req.PermissionMode
 	if permissionMode == "" {
 		if r.Permission != nil {
@@ -92,7 +101,11 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 		}
 	}
 	req.Conversation.AddUser(userText)
-	stableSystem := prompt.BuildSystemPrompt()
+	memoryIndex := ""
+	if r.Memory != nil {
+		memoryIndex = r.Memory.IndexText()
+	}
+	stableSystem := prompt.BuildSystemPrompt(prompt.PromptInputs{Instructions: r.Instructions, Memory: memoryIndex})
 	environment := prompt.GatherEnvironment(r.Version, r.Provider.Name(), r.Provider.Model(), r.Env.CWD).Render()
 	sendEvent(ctx, events, Event{Type: EventProgress, Message: "agent run started"})
 
@@ -160,6 +173,7 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 				r.Compact.UpdateUsageAnchor(out.Usage, req.Conversation.Len())
 			}
 			unknownCount = 0
+			r.updateMemoryAfterRun(req.Conversation, startLen)
 			sendStop(ctx, events, iteration, StopCompleted, "completed")
 			return
 		}
@@ -191,6 +205,17 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 			return
 		}
 	}
+}
+
+func (r Runner) updateMemoryAfterRun(conv *conversation.Conversation, startLen int) {
+	if r.Memory == nil || conv == nil {
+		return
+	}
+	messages := conv.Messages()
+	if startLen < 0 || startLen >= len(messages) {
+		startLen = 0
+	}
+	r.Memory.UpdateAsync(context.Background(), memory.UpdateInput{Messages: messages[startLen:]})
 }
 
 func (r Runner) prepareRequest(req Request) (string, []tools.Definition, toolExecutionOptions) {

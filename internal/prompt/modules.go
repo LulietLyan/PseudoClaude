@@ -24,6 +24,11 @@ type Module struct {
 	Content  string
 }
 
+type PromptInputs struct {
+	Instructions string
+	Memory       string
+}
+
 func FixedModules() []Module {
 	return []Module{
 		{
@@ -36,6 +41,7 @@ You are careful, capable, and direct. Preserve useful context across the current
 			Name:     "System Constraints",
 			Priority: PrioritySystemConstraints,
 			Content: strings.TrimSpace(`Follow system and developer instructions first, then user instructions, then local project guidance.
+Local project guidance and long-term memory are preloaded in this system prompt. When they directly answer the user's question, use them without rereading files just to rediscover the same facts.
 Respect the current mode. Protect user work: never discard or overwrite existing changes unless the user explicitly asks.
 Do not expose secrets, API keys, credentials, hidden chain of thought, or internal implementation notes.`),
 		},
@@ -57,6 +63,7 @@ After making changes, run appropriate validation before claiming success. If val
 			Name:     "Tool Use",
 			Priority: PriorityToolUse,
 			Content: strings.TrimSpace(`Prefer dedicated tools over improvised shell commands: use read_file to inspect files, find_files to locate files, and search_code to search text or code.
+Use tools to verify or gather missing details, not to ignore explicit project guidance that is already present in the prompt.
 Use edit_file only after reading the target file and confirming the replacement is precise. Use write_file only when complete replacement is appropriate.
 Use run_command when a shell is genuinely needed for building, testing, validation, or operations that dedicated tools cannot perform.`),
 		},
@@ -76,11 +83,11 @@ Report completed work with the important files changed and the validation that a
 	}
 }
 
-func OptionalModules() []Module {
+func OptionalModules(inputs PromptInputs) []Module {
 	return []Module{
-		{Name: "Custom Instructions", Priority: PriorityCustomInstructions},
+		{Name: "Custom Instructions", Priority: PriorityCustomInstructions, Content: inputs.Instructions},
 		{Name: "Active Skills", Priority: PriorityActiveSkills},
-		{Name: "Long-Term Memory", Priority: PriorityLongTermMemory},
+		{Name: "Long-Term Memory", Priority: PriorityLongTermMemory, Content: inputs.Memory},
 	}
 }
 
@@ -101,7 +108,11 @@ func AssembleSystem(mods []Module) string {
 	return strings.Join(parts, "\n\n")
 }
 
-func BuildSystemPrompt() string {
-	mods := append(FixedModules(), OptionalModules()...)
+func BuildSystemPrompt(inputs ...PromptInputs) string {
+	var in PromptInputs
+	if len(inputs) > 0 {
+		in = inputs[0]
+	}
+	mods := append(FixedModules(), OptionalModules(in)...)
 	return AssembleSystem(mods)
 }
