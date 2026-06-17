@@ -180,6 +180,9 @@ func (m Model) bannerView() string {
 		centerLine(bannerMetaStyle.Render(fitLine("cwd: "+m.cwd, contentWidth)), contentWidth),
 		centerLine(bannerMetaStyle.Render("Ready. Shift+Tab cycles permission mode."), contentWidth),
 	)
+	for _, status := range m.startupStatus {
+		lines = append(lines, centerLine(bannerMetaStyle.Render(fitLine(status, contentWidth)), contentWidth))
+	}
 	panel := bannerFrameStyle.Width(frameWidth).Render(strings.Join(lines, "\n"))
 	return lipgloss.NewStyle().Width(terminalWidth).Align(lipgloss.Center).Render(panel)
 }

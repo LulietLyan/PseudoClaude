@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"PseudoClaude/internal/agent"
@@ -60,6 +61,7 @@ type Model struct {
 	height           int
 	initErr          error
 	cwd              string
+	startupStatus    []string
 	registry         *tools.Registry
 	toolEnv          tools.Env
 }
@@ -156,6 +158,15 @@ func New(providers []config.ProviderConfig, cwd string, registry *tools.Registry
 		m.runner.Provider = provider
 	}
 
+	return m
+}
+
+func (m Model) WithStartupStatus(messages ...string) Model {
+	for _, message := range messages {
+		if strings.TrimSpace(message) != "" {
+			m.startupStatus = append(m.startupStatus, message)
+		}
+	}
 	return m
 }
 

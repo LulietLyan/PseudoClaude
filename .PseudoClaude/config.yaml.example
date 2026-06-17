@@ -2,13 +2,13 @@ providers:
   - name: Claude
     protocol: anthropic
     base_url:
-    api_key: sk-ant-your-key
+    api_key: ${ANTHROPIC_API_KEY}
     model: claude-sonnet-4-5
     thinking: true
 
   # - name: OpenAI
   #   protocol: openai
   #   base_url:
-  #   api_key: sk-your-key
+  #   api_key: ${OPENAI_API_KEY}
   #   model: gpt-5.2
   #   thinking: false
