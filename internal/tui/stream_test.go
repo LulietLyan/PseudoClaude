@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"PseudoClaude/internal/agent"
+	"PseudoClaude/internal/compact"
 	"PseudoClaude/internal/config"
 	"PseudoClaude/internal/llm"
 	"PseudoClaude/internal/permission"
@@ -119,8 +120,11 @@ func TestBannerRerendersWhileIdleAndAfterReply(t *testing.T) {
 func TestTranscriptRendersAfterBanner(t *testing.T) {
 	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
 	model.width = 120
+	model.height = 50
 	model.appendTranscript(transcriptEntry{kind: transcriptUser, text: "hello"})
 	model.appendTranscript(transcriptEntry{kind: transcriptAssistant, text: "world", elapsed: time.Second})
+	model.stickToBottom = false
+	model.viewport.GotoTop()
 	view := model.view()
 	bannerIndex := strings.Index(view, "PseudoClaude v"+Version)
 	userIndex := strings.Index(view, "hello")
@@ -156,6 +160,108 @@ func TestViewDoesNotInsertLargeGapBeforeInput(t *testing.T) {
 	view := model.view()
 	if strings.Contains(view, "\n\n\n\n") {
 		t.Fatalf("view has excessive vertical gap: %q", view)
+	}
+}
+
+func TestViewCanScrollTranscriptHistory(t *testing.T) {
+	model := New(nil, t.TempDir(), nil)
+	model.width = 80
+	model.height = 12
+	model.showBanner = false
+	for i := 0; i < 20; i++ {
+		model.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "old status block"})
+	}
+	model.appendTranscript(transcriptEntry{kind: transcriptAssistant, text: "latest assistant output", elapsed: time.Second})
+
+	view := model.view()
+	if strings.Contains(view, "old status block") {
+		t.Fatalf("old transcript should be cropped out: %q", view)
+	}
+	if !strings.Contains(view, "latest assistant output") {
+		t.Fatalf("latest output should remain visible: %q", view)
+	}
+	if !strings.Contains(view, "DEFAULT") {
+		t.Fatalf("status/input area should remain visible: %q", view)
+	}
+	if lines := strings.Split(view, "\n"); len(lines) > model.height {
+		t.Fatalf("view height = %d, want <= %d\n%s", len(lines), model.height, view)
+	}
+
+	model.stickToBottom = false
+	model.viewport.GotoTop()
+	view = model.view()
+	if !strings.Contains(view, "old status block") {
+		t.Fatalf("scrolling to top should reveal old transcript: %q", view)
+	}
+	if !strings.Contains(model.statusBar(model.contentWidth()), "SCROLLED") {
+		t.Fatalf("status should indicate scrolled mode")
+	}
+	model.stickToBottom = true
+	model.viewport.GotoBottom()
+	if !model.viewport.AtBottom() {
+		t.Fatalf("viewport should be at bottom")
+	}
+}
+
+func TestStreamingReplyLivesInScrollableViewport(t *testing.T) {
+	model := New(nil, t.TempDir(), nil)
+	model.width = 80
+	model.height = 12
+	model.showBanner = false
+	model.state = stateStreaming
+	model.turnStart = time.Now()
+	model.curReply = "reply-start\n" + strings.Repeat("middle line\n", 30) + "reply-end"
+
+	view := model.view()
+	if strings.Contains(view, "reply-start") {
+		t.Fatalf("default bottom view should not show top of long stream: %q", view)
+	}
+	if !strings.Contains(view, "reply-end") {
+		t.Fatalf("default bottom view should show stream tail: %q", view)
+	}
+
+	model.stickToBottom = false
+	model.viewport.GotoTop()
+	view = model.view()
+	if !strings.Contains(view, "reply-start") {
+		t.Fatalf("scrolling up should reveal stream head: %q", view)
+	}
+}
+
+func TestMacFriendlyScrollKeysAdjustTranscriptOffset(t *testing.T) {
+	model := New(nil, t.TempDir(), nil)
+	model.width = 80
+	model.height = 10
+	model.showBanner = false
+	for i := 0; i < 20; i++ {
+		model.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "status block"})
+	}
+
+	next, cmd := model.Update(tea.KeyPressMsg{Code: 'u', Mod: uv.ModCtrl})
+	model = next.(Model)
+	if cmd != nil {
+		t.Fatal("scroll key should not return command")
+	}
+	if model.viewport.YOffset() == 0 {
+		t.Fatal("ctrl+u should increase scroll offset")
+	}
+	upOffset := model.viewport.YOffset()
+	next, _ = model.Update(tea.KeyPressMsg{Code: 'd', Mod: uv.ModCtrl})
+	model = next.(Model)
+	if model.viewport.YOffset() <= upOffset {
+		t.Fatalf("ctrl+d should move back down, got before=%d after=%d", upOffset, model.viewport.YOffset())
+	}
+	next, _ = model.Update(tea.KeyPressMsg{Code: 't', Mod: uv.ModCtrl})
+	model = next.(Model)
+	if model.viewport.YOffset() != 0 {
+		t.Fatal("ctrl+t should jump to top")
+	}
+	model.stickToBottom = true
+	model.viewport.GotoBottom()
+	next, _ = model.Update(tea.KeyPressMsg{Code: 'b', Mod: uv.ModCtrl})
+	model = next.(Model)
+	if !model.viewport.AtBottom() {
+		t.Fatalf("ctrl+b should return to bottom, got %d", model.viewport.YOffset())
 	}
 }
 
@@ -235,6 +341,61 @@ func TestPlanAndDoInputHandling(t *testing.T) {
 	}
 	if req.Mode != agent.ModeDo || req.PlanTask != "change the thing" || req.PlanText != "plan text" {
 		t.Fatalf("do request = %+v", req)
+	}
+}
+
+func TestUnknownSlashCommandDoesNotSubmitUserMessage(t *testing.T) {
+	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
+	model.textarea.SetValue("/unknown")
+	next, cmd := model.updateIdle(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(Model)
+	if cmd != nil {
+		t.Fatal("unexpected command")
+	}
+	if model.conv.Len() != 0 {
+		t.Fatalf("conversation length = %d", model.conv.Len())
+	}
+	if len(model.transcript) == 0 || model.transcript[len(model.transcript)-1].kind != transcriptError {
+		t.Fatalf("missing command error transcript: %+v", model.transcript)
+	}
+}
+
+func TestManualCompactCommandDoesNotAddUserMessage(t *testing.T) {
+	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
+	model.provider = fakeProvider{events: []llm.StreamEvent{{Text: "<analysis>x</analysis><summary>short summary</summary>"}, {Done: true}}}
+	runtime, err := compact.NewRuntime(t.TempDir(), 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.compactRuntime = runtime
+	model.conv.AddUser("hello")
+	before := model.conv.Len()
+
+	model.textarea.SetValue("/compact")
+	next, cmd := model.updateIdle(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(Model)
+	if model.conv.Len() != before {
+		t.Fatalf("/compact added a user message: before=%d after=%d", before, model.conv.Len())
+	}
+	if cmd == nil || model.state != stateStreaming {
+		t.Fatalf("state=%v cmd=%v", model.state, cmd)
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, inner := range batch {
+			result := inner()
+			if compactResult, ok := result.(compactMsg); ok {
+				next, _ = model.updateStreaming(compactResult)
+				model = next.(Model)
+				break
+			}
+		}
+	}
+	if model.state != stateIdle {
+		t.Fatalf("state = %v", model.state)
+	}
+	if !strings.Contains(model.transcript[len(model.transcript)-1].text, "estimated tokens") {
+		t.Fatalf("missing compact success transcript: %+v", model.transcript)
 	}
 }
 

@@ -6,17 +6,21 @@ import (
 	"time"
 
 	"PseudoClaude/internal/agent"
+	"PseudoClaude/internal/compact"
 	"PseudoClaude/internal/config"
 	"PseudoClaude/internal/conversation"
 	"PseudoClaude/internal/llm"
 	"PseudoClaude/internal/permission"
 	"PseudoClaude/internal/tools"
 
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
+	"charm.land/lipgloss/v2"
 )
 
 const Version = "0.1.0"
@@ -35,11 +39,13 @@ type Model struct {
 	textarea         textarea.Model
 	spinner          spinner.Model
 	list             list.Model
+	viewport         viewport.Model
 	renderer         *glamour.TermRenderer
 	providers        []config.ProviderConfig
 	provider         llm.Provider
 	conv             *conversation.Conversation
 	runner           agent.Runner
+	compactRuntime   *compact.Runtime
 	events           <-chan agent.Event
 	cancel           context.CancelFunc
 	curReply         string
@@ -64,6 +70,7 @@ type Model struct {
 	startupStatus    []string
 	registry         *tools.Registry
 	toolEnv          tools.Env
+	stickToBottom    bool
 }
 
 type toolStatus struct {
@@ -108,6 +115,18 @@ func New(providers []config.ProviderConfig, cwd string, registry *tools.Registry
 	ta.Focus()
 
 	sp := spinner.New(spinner.WithSpinner(spinner.Points))
+	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(10))
+	vp.SoftWrap = true
+	vp.FillHeight = true
+	vp.MouseWheelEnabled = true
+	vp.KeyMap.PageDown = key.NewBinding(key.WithKeys("pgdown"))
+	vp.KeyMap.PageUp = key.NewBinding(key.WithKeys("pgup"))
+	vp.KeyMap.HalfPageDown = key.NewBinding(key.WithKeys("ctrl+d"))
+	vp.KeyMap.HalfPageUp = key.NewBinding(key.WithKeys("ctrl+u"))
+	vp.KeyMap.Down = key.NewBinding()
+	vp.KeyMap.Up = key.NewBinding()
+	vp.KeyMap.Left = key.NewBinding()
+	vp.KeyMap.Right = key.NewBinding()
 	renderer, err := glamour.NewTermRenderer(glamour.WithWordWrap(80))
 
 	if registry == nil {
@@ -131,6 +150,7 @@ func New(providers []config.ProviderConfig, cwd string, registry *tools.Registry
 		state:            stateIdle,
 		textarea:         ta,
 		spinner:          sp,
+		viewport:         vp,
 		renderer:         renderer,
 		providers:        providers,
 		conv:             &conversation.Conversation{},
@@ -143,8 +163,15 @@ func New(providers []config.ProviderConfig, cwd string, registry *tools.Registry
 		permissionMode:   permissionMode,
 		permissionEngine: permissionEngine,
 		showBanner:       true,
+		stickToBottom:    true,
 	}
-	m.runner = agent.Runner{Registry: registry, Env: m.toolEnv, Config: agent.DefaultConfig(), Version: Version, Permission: permissionEngine}
+	runtime, compactErr := compact.NewRuntime(cwd, 0)
+	if compactErr != nil {
+		m.appendTranscript(transcriptEntry{kind: transcriptError, text: "compact runtime 初始化失败: " + compactErr.Error()})
+	} else {
+		m.compactRuntime = runtime
+	}
+	m.runner = agent.Runner{Registry: registry, Env: m.toolEnv, Config: agent.DefaultConfig(), Version: Version, Permission: permissionEngine, Compact: runtime}
 
 	if len(providers) > 1 {
 		m.state = stateSelecting
@@ -156,6 +183,9 @@ func New(providers []config.ProviderConfig, cwd string, registry *tools.Registry
 		}
 		m.provider = provider
 		m.runner.Provider = provider
+		if m.compactRuntime != nil {
+			m.compactRuntime.SetContextWindow(providers[0].EffectiveContextWindow())
+		}
 	}
 
 	return m
@@ -185,7 +215,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		return m.handleResize(msg), nil
+	case tea.MouseWheelMsg:
+		m = m.syncViewport()
+		return m.updateViewport(msg)
 	case tea.KeyPressMsg:
+		m = m.syncViewport()
+		if next, ok := m.handleScrollKey(msg); ok {
+			return next, nil
+		}
 		if msg.String() == "ctrl+c" {
 			if m.state == stateApproving {
 				m.stopStream()
@@ -210,7 +247,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() tea.View {
-	return tea.NewView(m.view())
+	view := tea.NewView(m.view())
+	view.MouseMode = tea.MouseModeCellMotion
+	return view
 }
 
 func (m Model) Run() error {
@@ -223,6 +262,7 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) Model {
 	m.height = msg.Height
 	contentWidth := m.contentWidth()
 	m.textarea.SetWidth(contentWidth)
+	m = m.syncViewport()
 	if m.state == stateSelecting {
 		m.list.SetSize(contentWidth, max(8, msg.Height-8))
 	}
@@ -238,4 +278,73 @@ func (m *Model) stopStream() {
 		m.cancel()
 		m.cancel = nil
 	}
+}
+
+func (m Model) handleScrollKey(msg tea.KeyPressMsg) (Model, bool) {
+	switch msg.String() {
+	case "ctrl+t":
+		m.stickToBottom = false
+		m.viewport.GotoTop()
+		return m, true
+	case "ctrl+b":
+		m.stickToBottom = true
+		m.viewport.GotoBottom()
+		return m, true
+	}
+	switch msg.Code {
+	case tea.KeyPgUp:
+		m.stickToBottom = false
+		m.viewport.PageUp()
+		return m, true
+	case tea.KeyPgDown:
+		m.viewport.PageDown()
+		m.stickToBottom = m.viewport.AtBottom()
+		return m, true
+	case tea.KeyHome:
+		m.stickToBottom = false
+		m.viewport.GotoTop()
+		return m, true
+	case tea.KeyEnd:
+		m.stickToBottom = true
+		m.viewport.GotoBottom()
+		return m, true
+	default:
+		switch msg.String() {
+		case "ctrl+u":
+			m.stickToBottom = false
+			m.viewport.HalfPageUp()
+			return m, true
+		case "ctrl+d":
+			m.viewport.HalfPageDown()
+			m.stickToBottom = m.viewport.AtBottom()
+			return m, true
+		}
+		return m, false
+	}
+}
+
+func (m Model) updateViewport(msg tea.Msg) (Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.viewport, cmd = m.viewport.Update(msg)
+	m.stickToBottom = m.viewport.AtBottom()
+	return m, cmd
+}
+
+func (m Model) syncViewport() Model {
+	m.viewport.SetWidth(max(20, m.width))
+	columnWidth := m.contentWidth()
+	bottomParts := make([]string, 0, 5)
+	if m.state == stateApproving {
+		bottomParts = append(bottomParts, m.centeredColumn(m.approvalBlock(columnWidth)))
+	}
+	bottomParts = append(bottomParts, m.centeredColumn(inputBoxStyle.Width(columnWidth).Render(m.textarea.View())))
+	bottomParts = append(bottomParts, m.centeredColumn(m.statusBar(columnWidth)))
+	bottom := strings.Join(bottomParts, "\n")
+	if m.height > 0 {
+		m.viewport.SetHeight(max(1, m.height-lipgloss.Height(bottom)-1))
+	} else {
+		m.viewport.SetHeight(10)
+	}
+	m.updateViewportContent()
+	return m
 }

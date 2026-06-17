@@ -95,27 +95,23 @@ func (m Model) view() string {
 	}
 
 	columnWidth := m.contentWidth()
-	parts := make([]string, 0, 4)
-	if m.showBanner {
-		parts = append(parts, m.bannerView())
-	}
-	if len(m.transcript) > 0 {
-		parts = append(parts, m.centeredColumn(m.transcriptView(columnWidth)))
-	}
-	if m.state == stateStreaming {
-		parts = append(parts, m.centeredColumn(m.streamingView(columnWidth)))
-	}
+	m.viewport.SetWidth(max(20, m.width))
+	bottomParts := make([]string, 0, 5)
 	if m.state == stateApproving {
-		parts = append(parts, m.centeredColumn(m.streamingView(columnWidth)), m.centeredColumn(m.approvalBlock(columnWidth)))
+		bottomParts = append(bottomParts, m.centeredColumn(m.approvalBlock(columnWidth)))
 	}
 
-	parts = append(parts, m.centeredColumn(inputBoxStyle.Width(columnWidth).Render(m.textarea.View())))
-	parts = append(parts, m.centeredColumn(m.statusBar(columnWidth)))
-	content := strings.Join(parts, "\n")
-	if m.height <= 0 {
-		return content
+	bottomParts = append(bottomParts, m.centeredColumn(inputBoxStyle.Width(columnWidth).Render(m.textarea.View())))
+	bottomParts = append(bottomParts, m.centeredColumn(m.statusBar(columnWidth)))
+	bottom := strings.Join(bottomParts, "\n")
+	if m.height > 0 {
+		viewportHeight := max(1, m.height-lipgloss.Height(bottom)-1)
+		m.viewport.SetHeight(viewportHeight)
+	} else {
+		m.viewport.SetHeight(10)
 	}
-	return spaceBeforeInput(parts, m.height)
+	m.updateViewportContent()
+	return strings.Join([]string{m.viewport.View(), bottom}, "\n")
 }
 
 func (m Model) contentWidth() int {
@@ -137,6 +133,7 @@ func (m *Model) appendTranscript(entry transcriptEntry) {
 	if len(m.transcript) > maxTranscriptBlocks {
 		m.transcript = append([]transcriptEntry(nil), m.transcript[len(m.transcript)-maxTranscriptBlocks:]...)
 	}
+	m.updateViewportContent()
 }
 
 func (m Model) transcriptView(width int) string {
@@ -145,6 +142,37 @@ func (m Model) transcriptView(width int) string {
 		blocks = append(blocks, m.renderTranscriptEntry(entry, width))
 	}
 	return strings.Join(blocks, "\n\n")
+}
+
+func (m *Model) updateViewportContent() {
+	if m == nil {
+		return
+	}
+	var content string
+	columnWidth := m.contentWidth()
+	if m.showBanner {
+		content = m.bannerView()
+	}
+	if len(m.transcript) > 0 {
+		transcript := m.centeredColumn(m.transcriptView(columnWidth))
+		if content != "" {
+			content += "\n\n" + transcript
+		} else {
+			content = transcript
+		}
+	}
+	if m.state == stateStreaming || m.state == stateApproving {
+		streaming := m.centeredColumn(m.streamingView(columnWidth))
+		if content != "" {
+			content += "\n\n" + streaming
+		} else {
+			content = streaming
+		}
+	}
+	m.viewport.SetContent(content)
+	if m.stickToBottom {
+		m.viewport.GotoBottom()
+	}
 }
 
 func (m Model) renderTranscriptEntry(entry transcriptEntry, width int) string {
@@ -220,6 +248,9 @@ func (m Model) statusBar(width int) string {
 	}
 	if m.lastStop != nil && m.lastStop.Reason != "" {
 		left += " · " + string(m.lastStop.Reason)
+	}
+	if !m.stickToBottom {
+		left += " · SCROLLED"
 	}
 	innerWidth := max(1, width-2)
 	leftWidth := lipgloss.Width(left)

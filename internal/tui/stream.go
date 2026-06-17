@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"PseudoClaude/internal/agent"
+	"PseudoClaude/internal/compact"
 	"PseudoClaude/internal/permission"
 
 	"charm.land/bubbles/v2/spinner"
@@ -14,6 +15,10 @@ import (
 )
 
 type agentMsg agent.Event
+type compactMsg struct {
+	output compact.ManageOutput
+	err    error
+}
 
 func waitForAgentEvent(ch <-chan agent.Event) tea.Cmd {
 	return func() tea.Msg {
@@ -41,25 +46,77 @@ func (m Model) updateIdle(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if text == "/exit" {
 				return m, tea.Quit
 			}
-			if text == "/plan" {
-				m.planMode = true
-				m.textarea.Reset()
-				m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "Plan Mode 已开启。接下来的输入会只使用只读工具；输入 /do 执行最近计划。"})
-				return m, nil
-			}
-			if text == "/chat" || text == "/exit-plan" {
-				m.planMode = false
-				m.textarea.Reset()
-				m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "Plan Mode 已关闭。"})
-				return m, nil
+			if strings.HasPrefix(text, "/") {
+				return m.dispatchCommand(text)
 			}
 			return m.submit(text)
 		}
+	case compactMsg:
+		m.progress = ""
+		m.state = stateIdle
+		m.textarea.Reset()
+		if msg.err != nil {
+			m.appendTranscript(transcriptEntry{kind: transcriptError, text: "压缩失败: " + msg.err.Error()})
+			return m, m.textarea.Focus()
+		}
+		m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: fmt.Sprintf("上下文已压缩：estimated tokens %d -> %d", msg.output.BeforeTokens, msg.output.AfterTokens)})
+		return m, m.textarea.Focus()
 	}
 
 	var cmd tea.Cmd
 	m.textarea, cmd = m.textarea.Update(msg)
 	return m, cmd
+}
+
+func (m Model) dispatchCommand(text string) (tea.Model, tea.Cmd) {
+	switch {
+	case text == "/plan":
+		m.planMode = true
+		m.textarea.Reset()
+		m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "Plan Mode 已开启。接下来的输入会只使用只读工具；输入 /do 执行最近计划。"})
+		return m, nil
+	case text == "/chat" || text == "/exit-plan":
+		m.planMode = false
+		m.textarea.Reset()
+		m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "Plan Mode 已关闭。"})
+		return m, nil
+	case text == "/do" || strings.HasPrefix(text, "/plan "):
+		return m.submit(text)
+	case text == "/compact":
+		return m.startManualCompact()
+	default:
+		m.textarea.Reset()
+		m.appendTranscript(transcriptEntry{kind: transcriptError, text: "未知命令。可用命令：/plan、/chat、/exit-plan、/do、/compact、/exit"})
+		return m, nil
+	}
+}
+
+func (m Model) startManualCompact() (tea.Model, tea.Cmd) {
+	if m.provider == nil {
+		m.appendTranscript(transcriptEntry{kind: transcriptError, text: "provider 尚未初始化"})
+		return m, nil
+	}
+	if m.compactRuntime == nil {
+		m.appendTranscript(transcriptEntry{kind: transcriptError, text: "compact runtime 尚未初始化"})
+		return m, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.progress = "正在压缩上下文..."
+	m.turnStart = time.Now()
+	m.elapsed = 0
+	m.state = stateStreaming
+	m.textarea.Reset()
+	m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "正在压缩上下文..."})
+	return m, tea.Batch(func() tea.Msg {
+		output, err := compact.ForceCompact(ctx, compact.ManageInput{
+			Conversation: m.conv,
+			Runtime:      m.compactRuntime,
+			Provider:     m.provider,
+			Trigger:      compact.TriggerManual,
+		})
+		return compactMsg{output: output, err: err}
+	}, m.spinner.Tick)
 }
 
 func (m Model) submit(text string) (tea.Model, tea.Cmd) {
@@ -82,6 +139,7 @@ func (m Model) submit(text string) (tea.Model, tea.Cmd) {
 	m.runner.Registry = m.registry
 	m.runner.Env = m.toolEnv
 	m.runner.Permission = m.permissionEngine
+	m.runner.Compact = m.compactRuntime
 	m.events = m.runner.Run(ctx, req)
 	m.turnStart = time.Now()
 	m.elapsed = 0
@@ -122,6 +180,18 @@ func (m Model) requestForInput(text string) (agent.Request, string, error) {
 
 func (m Model) updateStreaming(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case compactMsg:
+		m.elapsed = time.Since(m.turnStart)
+		m.stopStream()
+		m.state = stateIdle
+		m.progress = ""
+		m.curTool = nil
+		if msg.err != nil {
+			m.appendTranscript(transcriptEntry{kind: transcriptError, text: "压缩失败: " + msg.err.Error()})
+			return m, m.textarea.Focus()
+		}
+		m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: fmt.Sprintf("上下文已压缩：estimated tokens %d -> %d", msg.output.BeforeTokens, msg.output.AfterTokens)})
+		return m, m.textarea.Focus()
 	case agentMsg:
 		return m.handleAgentEvent(agent.Event(msg))
 	case spinner.TickMsg:
@@ -148,6 +218,9 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 	switch event.Type {
 	case agent.EventProgress:
 		m.progress = event.Message
+		if isCompactProgress(event.Message) {
+			m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: event.Message})
+		}
 		return m, waitForAgentEvent(m.events)
 	case agent.EventTextDelta:
 		m.curReply += event.Text
@@ -195,6 +268,12 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 	default:
 		return m, waitForAgentEvent(m.events)
 	}
+}
+
+func isCompactProgress(message string) bool {
+	return strings.Contains(message, "压缩上下文") ||
+		strings.Contains(message, "上下文已压缩") ||
+		strings.Contains(message, "工具结果已落盘")
 }
 
 func (m Model) updateApproving(msg tea.Msg) (tea.Model, tea.Cmd) {

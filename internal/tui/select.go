@@ -57,6 +57,9 @@ func (m Model) updateSelecting(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.provider = provider
 			m.runner.Provider = provider
+			if m.compactRuntime != nil {
+				m.compactRuntime.SetContextWindow(item.cfg.EffectiveContextWindow())
+			}
 			m.state = stateIdle
 			m.showBanner = true
 			return m, m.textarea.Focus()
