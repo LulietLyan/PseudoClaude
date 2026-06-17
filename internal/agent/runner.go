@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"PseudoClaude/internal/compact"
 	"PseudoClaude/internal/conversation"
 	"PseudoClaude/internal/llm"
 	"PseudoClaude/internal/permission"
@@ -22,6 +23,7 @@ type Runner struct {
 	Config     Config
 	Version    string
 	Permission *permission.Engine
+	Compact    *compact.Runtime
 }
 
 type Config struct {
@@ -106,6 +108,29 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 		}
 		sendEvent(ctx, events, Event{Type: EventProgress, Iteration: iteration, Message: "requesting model"})
 
+		if r.Compact != nil {
+			out, err := compact.ManageContext(ctx, compact.ManageInput{
+				Conversation: req.Conversation,
+				Runtime:      r.Compact,
+				Provider:     r.Provider,
+				Trigger:      compact.TriggerAuto,
+				OnProgress: func(message string) {
+					sendEvent(ctx, events, Event{Type: EventProgress, Iteration: iteration, Message: message})
+				},
+			})
+			if out.TriggeredLayer1 {
+				sendEvent(ctx, events, Event{Type: EventProgress, Iteration: iteration, Message: fmt.Sprintf("工具结果已落盘：%d 个；estimated tokens %d -> %d", out.OffloadedCount, out.BeforeTokens, out.AfterTokens)})
+			}
+			if out.TriggeredLayer2 {
+				sendEvent(ctx, events, Event{Type: EventProgress, Iteration: iteration, Message: fmt.Sprintf("上下文已压缩：estimated tokens %d -> %d", out.BeforeTokens, out.AfterTokens)})
+			}
+			if err != nil {
+				sendEvent(ctx, events, Event{Type: EventError, Iteration: iteration, Err: err})
+				sendStop(ctx, events, iteration, StopStreamError, err.Error())
+				return
+			}
+		}
+
 		collector := &streamCollector{}
 		modelReq := llm.Request{
 			Messages: req.Conversation.Messages(),
@@ -126,18 +151,23 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 			sendStop(ctx, events, iteration, StopStreamError, err.Error())
 			return
 		}
-
 		if strings.TrimSpace(out.Text) != "" {
 			req.Conversation.AddAssistant(out.Text)
 			sendEvent(ctx, events, Event{Type: EventAssistantText, Iteration: iteration, Text: out.Text, Message: out.Text})
 		}
 		if len(out.ToolCalls) == 0 {
+			if r.Compact != nil {
+				r.Compact.UpdateUsageAnchor(out.Usage, req.Conversation.Len())
+			}
 			unknownCount = 0
 			sendStop(ctx, events, iteration, StopCompleted, "completed")
 			return
 		}
 
 		req.Conversation.AddAssistantToolCalls(out.ToolCalls)
+		if r.Compact != nil {
+			r.Compact.UpdateUsageAnchor(out.Usage, req.Conversation.Len())
+		}
 		results, err := executeToolCalls(ctx, r.Registry, r.Env, iteration, out.ToolCalls, events, toolOpts, r.Permission, permissionMode)
 		for _, result := range results {
 			req.Conversation.AddToolResult(llm.ToolResult{

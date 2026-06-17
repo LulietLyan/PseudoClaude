@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"PseudoClaude/internal/compact"
 	"PseudoClaude/internal/conversation"
 	"PseudoClaude/internal/llm"
 	"PseudoClaude/internal/permission"
@@ -677,6 +678,38 @@ func TestRunnerStreamErrorStop(t *testing.T) {
 	events := collectEvents(Runner{Provider: provider, Registry: &tools.Registry{}}.Run(context.Background(), Request{UserText: "hi", Conversation: &conversation.Conversation{}}))
 	if lastStop(t, events).Reason != StopStreamError {
 		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestRunnerAutoCompactBeforeOrdinaryRequest(t *testing.T) {
+	rt, err := compact.NewRuntime(t.TempDir(), 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &fakeProvider{streams: [][]llm.StreamEvent{
+		{{Text: "<analysis>draft</analysis><summary>compressed history</summary>"}, {Done: true}},
+		{{Text: "done"}, {Done: true}},
+	}}
+	var conv conversation.Conversation
+	for i := 0; i < 6; i++ {
+		conv.AddUser(strings.Repeat("u", 2000))
+		conv.AddAssistant(strings.Repeat("a", 2000))
+	}
+	events := collectEvents(Runner{Provider: provider, Registry: &tools.Registry{}, Compact: rt}.Run(context.Background(), Request{
+		UserText:     "continue",
+		Conversation: &conv,
+	}))
+	if lastStop(t, events).Reason != StopCompleted {
+		t.Fatalf("events = %+v", events)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("requests = %d, want summary + ordinary", len(provider.requests))
+	}
+	if len(provider.requests[0].Tools) != 0 || !strings.Contains(provider.requests[0].Messages[0].Content, "<summary>") {
+		t.Fatalf("first request should be summary request: %+v", provider.requests[0])
+	}
+	if !strings.Contains(provider.requests[1].Messages[0].Content, "compressed history") {
+		t.Fatalf("ordinary request did not use compacted history: %+v", provider.requests[1].Messages)
 	}
 }
 
