@@ -81,7 +81,7 @@ func (p openAIProvider) Stream(ctx context.Context, req Request) <-chan StreamEv
 				finalizeOpenAIStream(ctx, ch, acc, sentTools)
 				return
 			}
-			sendStreamEvent(ctx, ch, StreamEvent{Err: err})
+			sendStreamEvent(ctx, ch, StreamEvent{Err: wrapPromptTooLong(err)})
 			return
 		}
 		finalizeOpenAIStream(ctx, ch, acc, sentTools)

@@ -14,12 +14,13 @@ type Config struct {
 }
 
 type ProviderConfig struct {
-	Name     string `yaml:"name"`
-	Protocol string `yaml:"protocol"`
-	BaseURL  string `yaml:"base_url"`
-	APIKey   string `yaml:"api_key"`
-	Model    string `yaml:"model"`
-	Thinking bool   `yaml:"thinking"`
+	Name          string `yaml:"name"`
+	Protocol      string `yaml:"protocol"`
+	BaseURL       string `yaml:"base_url"`
+	APIKey        string `yaml:"api_key"`
+	Model         string `yaml:"model"`
+	Thinking      bool   `yaml:"thinking"`
+	ContextWindow int64  `yaml:"context_window"`
 }
 
 func Load(path string) (*Config, error) {
@@ -64,7 +65,24 @@ func (c Config) validate() error {
 		if strings.TrimSpace(p.Model) == "" {
 			return fmt.Errorf("%s.model 不能为空", prefix)
 		}
+		if p.ContextWindow < 0 {
+			return fmt.Errorf("%s.context_window 不能为负数", prefix)
+		}
 	}
 
 	return nil
+}
+
+func (p ProviderConfig) EffectiveContextWindow() int64 {
+	if p.ContextWindow > 0 {
+		return p.ContextWindow
+	}
+	switch p.Protocol {
+	case "anthropic":
+		return 200000
+	case "openai":
+		return 128000
+	default:
+		return 128000
+	}
 }

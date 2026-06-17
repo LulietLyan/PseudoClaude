@@ -103,6 +103,17 @@ func TestOpenAICompatibleEmptyJSONTail(t *testing.T) {
 	}
 }
 
+func TestWrapPromptTooLong(t *testing.T) {
+	err := wrapPromptTooLong(errors.New("context length exceeded"))
+	if !errors.Is(err, ErrPromptTooLong) {
+		t.Fatalf("error = %v", err)
+	}
+	err = wrapPromptTooLong(errors.New("401 unauthorized"))
+	if errors.Is(err, ErrPromptTooLong) {
+		t.Fatalf("auth error wrapped as prompt too long: %v", err)
+	}
+}
+
 func TestOpenAIAccumulatorBuildsToolCallFromFragments(t *testing.T) {
 	acc := openai.ChatCompletionAccumulator{}
 	chunks := []openai.ChatCompletionChunk{

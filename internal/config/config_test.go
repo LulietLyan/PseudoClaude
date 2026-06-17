@@ -47,12 +47,40 @@ providers:
 		"empty providers": `
 providers: []
 `,
+		"negative context window": `
+providers:
+  - name: Local
+    protocol: openai
+    api_key: test
+    model: model
+    context_window: -1
+`,
 	}
 
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Load(writeConfig(t, body)); err == nil {
 				t.Fatal("Load returned nil error")
+			}
+		})
+	}
+}
+
+func TestEffectiveContextWindow(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  ProviderConfig
+		want int64
+	}{
+		{"explicit", ProviderConfig{Protocol: "openai", ContextWindow: 32000}, 32000},
+		{"anthropic default", ProviderConfig{Protocol: "anthropic"}, 200000},
+		{"openai default", ProviderConfig{Protocol: "openai"}, 128000},
+		{"fallback default", ProviderConfig{Protocol: "other"}, 128000},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.EffectiveContextWindow(); got != tc.want {
+				t.Fatalf("EffectiveContextWindow = %d, want %d", got, tc.want)
 			}
 		})
 	}

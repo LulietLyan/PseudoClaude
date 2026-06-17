@@ -79,7 +79,7 @@ func (p anthropicProvider) Stream(ctx context.Context, req Request) <-chan Strea
 			}
 		}
 		if err := stream.Err(); err != nil {
-			sendStreamEvent(ctx, ch, StreamEvent{Err: err})
+			sendStreamEvent(ctx, ch, StreamEvent{Err: wrapPromptTooLong(err)})
 			return
 		}
 		sendStreamEvent(ctx, ch, StreamEvent{Usage: anthropicUsage(message.Usage)})

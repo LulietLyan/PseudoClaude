@@ -1,14 +1,15 @@
 providers:
   - name: Claude
     protocol: anthropic
-    base_url:
-    api_key: ${ANTHROPIC_API_KEY}
+    api_key: sk-ant-...
     model: claude-sonnet-4-5
-    thinking: true
+    thinking: false
+    # Optional context window in tokens. Defaults: anthropic=200000, openai=128000.
+    context_window: 200000
 
-  # - name: OpenAI
-  #   protocol: openai
-  #   base_url:
-  #   api_key: ${OPENAI_API_KEY}
-  #   model: gpt-5.2
-  #   thinking: false
+  - name: OpenAI
+    protocol: openai
+    api_key: sk-...
+    model: gpt-5
+    # Optional context window in tokens. Defaults: anthropic=200000, openai=128000.
+    context_window: 128000

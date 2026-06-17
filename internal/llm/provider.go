@@ -3,11 +3,39 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 
 	"PseudoClaude/internal/config"
 	"PseudoClaude/internal/tools"
 )
+
+var ErrPromptTooLong = errors.New("prompt too long")
+
+func wrapPromptTooLong(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	patterns := []string{
+		"prompt is too long",
+		"prompt too long",
+		"context length",
+		"context_length",
+		"maximum context",
+		"max context",
+		"too many tokens",
+		"exceeds the context",
+		"exceeded context",
+	}
+	for _, pattern := range patterns {
+		if strings.Contains(msg, pattern) {
+			return fmt.Errorf("%w: %v", ErrPromptTooLong, err)
+		}
+	}
+	return err
+}
 
 type Message struct {
 	Role       string
