@@ -41,3 +41,36 @@ func TestRule(t *testing.T) {
 		t.Fatalf("deny should win, got %+v ok=%v", got, ok)
 	}
 }
+
+func TestMCPRule(t *testing.T) {
+	rule, ok := parseRule("mcp__github__get_issue", DecisionAllow)
+	if !ok {
+		t.Fatal("mcp exact rule did not parse")
+	}
+	if !ruleMatches(rule, "mcp__github__get_issue", "", false) {
+		t.Fatal("mcp exact rule should match")
+	}
+	if ruleMatches(rule, "mcp__github__create_issue", "", false) {
+		t.Fatal("mcp exact rule should not match other tool")
+	}
+
+	rule, ok = parseRule("mcp__github__*", DecisionAllow)
+	if !ok {
+		t.Fatal("mcp glob rule did not parse")
+	}
+	if !ruleMatches(rule, "mcp__github__get_issue", "", false) {
+		t.Fatal("mcp glob should match same server")
+	}
+	if ruleMatches(rule, "mcp__gitlab__get_issue", "", false) {
+		t.Fatal("mcp glob should not match other server")
+	}
+
+	rs := RuleSet{
+		Allow: []Rule{{Tool: "mcp__github__*", Action: DecisionAllow}},
+		Deny:  []Rule{{Tool: "mcp__github__delete_issue", Action: DecisionDeny}},
+	}
+	got, ok := rs.Match("mcp__github__delete_issue", "", false)
+	if !ok || got.Decision != DecisionDeny {
+		t.Fatalf("deny should win, got %+v ok=%v", got, ok)
+	}
+}

@@ -23,6 +23,18 @@ func TestTarget(t *testing.T) {
 	if cat, ok := classify(llm.ToolCall{Name: "custom"}, tools.SafetyReadOnly); !ok || cat != CategoryRead {
 		t.Fatalf("custom readonly category = %s %v", cat, ok)
 	}
+	if cat, ok := classify(llm.ToolCall{Name: "mcp__github__get_issue"}, tools.SafetyReadOnly); !ok || cat != CategoryRead {
+		t.Fatalf("mcp readonly category = %s %v", cat, ok)
+	}
+	if cat, ok := classify(llm.ToolCall{Name: "mcp__github__create_issue"}, tools.SafetySideEffect); !ok || cat != CategoryWrite {
+		t.Fatalf("mcp side-effect category = %s %v", cat, ok)
+	}
+	if got := friendlyName("mcp__github__get_issue"); got != "mcp__github__get_issue" {
+		t.Fatalf("mcp friendly = %q", got)
+	}
+	if got := internalName("mcp__github__*"); got != "mcp__github__*" {
+		t.Fatalf("mcp internal = %q", got)
+	}
 
 	cmd, ok := commandText(llm.ToolCall{Name: "run_command", Arguments: json.RawMessage(`{"command":"git","args":["status","a b"]}`)})
 	if !ok || cmd != `git status "a b"` {

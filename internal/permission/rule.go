@@ -58,7 +58,12 @@ func ruleMatches(rule Rule, tool, target string, isPath bool) bool {
 	if rule.Action != DecisionAllow && rule.Action != DecisionDeny {
 		return false
 	}
-	if internalName(rule.Tool) != tool {
+	ruleTool := internalName(rule.Tool)
+	if isMCPToolGlob(ruleTool) {
+		if !commandGlobMatch(ruleTool, tool) {
+			return false
+		}
+	} else if ruleTool != tool {
 		return false
 	}
 	if rule.Pattern == "" {

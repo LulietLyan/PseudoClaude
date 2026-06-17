@@ -29,11 +29,25 @@ var internalByFriendly = map[string]string{
 }
 
 func friendlyName(internal string) string {
+	if isMCPToolName(internal) {
+		return internal
+	}
 	return friendlyByInternal[internal]
 }
 
 func internalName(friendly string) string {
+	if isMCPToolName(friendly) || isMCPToolGlob(friendly) {
+		return friendly
+	}
 	return internalByFriendly[friendly]
+}
+
+func isMCPToolName(name string) bool {
+	return strings.HasPrefix(name, "mcp__")
+}
+
+func isMCPToolGlob(name string) bool {
+	return strings.HasPrefix(name, "mcp__") && strings.ContainsAny(name, "*?")
 }
 
 func classify(call llm.ToolCall, safety tools.Safety) (Category, bool) {

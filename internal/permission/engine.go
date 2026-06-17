@@ -107,6 +107,9 @@ func (e *Engine) Check(mode Mode, call llm.ToolCall, safety tools.Safety) CheckR
 		if ok, pattern := hitsBlacklist(command); ok {
 			return CheckResult{Decision: DecisionDeny, Source: "blacklist", Reason: "command matches dangerous blacklist pattern", Rule: pattern, Category: category, Target: target}
 		}
+	} else if isMCPToolName(call.Name) {
+		target = call.Name
+		matchTarget = call.Name
 	} else {
 		rawTarget, rawMatchTarget, ok := pathTarget(call)
 		if !ok {
