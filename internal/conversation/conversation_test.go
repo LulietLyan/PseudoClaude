@@ -101,3 +101,28 @@ func TestConversationMultipleToolCallsInOneAssistantMessage(t *testing.T) {
 		t.Fatal("multiple tool calls were not deep copied")
 	}
 }
+
+func TestConversationReplaceMessagesDeepCopies(t *testing.T) {
+	var c Conversation
+	msgs := []llm.Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}}},
+		{Role: "user", ToolResult: &llm.ToolResult{CallID: "call_1", Name: "read_file", Content: "result"}},
+	}
+	c.ReplaceMessages(msgs)
+	msgs[0].Content = "mutated"
+	msgs[1].ToolCalls[0].Name = "mutated"
+	msgs[2].ToolResult.Content = "mutated"
+
+	got := c.Messages()
+	if c.Len() != 3 {
+		t.Fatalf("Len = %d", c.Len())
+	}
+	if got[0].Content != "hello" || got[1].ToolCalls[0].Name != "read_file" || got[2].ToolResult.Content != "result" {
+		t.Fatalf("messages were not deep copied: %+v", got)
+	}
+	got[2].ToolResult.Content = "changed again"
+	if c.Messages()[2].ToolResult.Content != "result" {
+		t.Fatal("Messages did not deep copy after ReplaceMessages")
+	}
+}
