@@ -100,6 +100,9 @@ func (m Model) view() string {
 	if m.state == stateApproving {
 		bottomParts = append(bottomParts, m.centeredColumn(m.approvalBlock(columnWidth)))
 	}
+	if m.state == stateResuming {
+		bottomParts = append(bottomParts, m.centeredColumn(m.resumeBlock(columnWidth)))
+	}
 
 	bottomParts = append(bottomParts, m.centeredColumn(inputBoxStyle.Width(columnWidth).Render(m.textarea.View())))
 	bottomParts = append(bottomParts, m.centeredColumn(m.statusBar(columnWidth)))
@@ -161,11 +164,14 @@ func (m *Model) updateViewportContent() {
 			content = transcript
 		}
 	}
-	if m.state == stateStreaming || m.state == stateApproving {
+	if m.state == stateStreaming || m.state == stateApproving || m.state == stateResuming {
 		streaming := m.centeredColumn(m.streamingView(columnWidth))
-		if content != "" {
+		if m.state == stateResuming {
+			streaming = ""
+		}
+		if streaming != "" && content != "" {
 			content += "\n\n" + streaming
-		} else {
+		} else if streaming != "" {
 			content = streaming
 		}
 	}
@@ -304,6 +310,27 @@ func (m Model) approvalBlock(width int) string {
 		}
 		lines = append(lines, line)
 	}
+	return approvalStyle.Width(width).Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) resumeBlock(width int) string {
+	innerWidth := max(20, width-6)
+	lines := []string{"Resume session"}
+	if len(m.resumeChoices) == 0 {
+		lines = append(lines, "暂无可恢复的历史会话")
+		return approvalStyle.Width(width).Render(strings.Join(lines, "\n"))
+	}
+	for i, choice := range m.resumeChoices {
+		title := fitLine(choice.info.Title, max(10, innerWidth-4))
+		meta := fitLine(resumeMeta(choice.info), max(10, innerWidth-4))
+		line := fmt.Sprintf("  %d %s", i+1, title)
+		if i == m.resumeCursor {
+			line = approvalSelectedStyle.Render(fmt.Sprintf("> %d %s", i+1, title))
+		}
+		lines = append(lines, line)
+		lines = append(lines, "    "+meta)
+	}
+	lines = append(lines, "", "Enter 恢复 · Esc 取消")
 	return approvalStyle.Width(width).Render(strings.Join(lines, "\n"))
 }
 

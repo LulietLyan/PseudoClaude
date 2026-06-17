@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -10,7 +11,9 @@ import (
 	"PseudoClaude/internal/config"
 	"PseudoClaude/internal/conversation"
 	"PseudoClaude/internal/llm"
+	"PseudoClaude/internal/memory"
 	"PseudoClaude/internal/permission"
+	"PseudoClaude/internal/session"
 	"PseudoClaude/internal/tools"
 
 	"charm.land/bubbles/v2/key"
@@ -32,6 +35,7 @@ const (
 	stateIdle
 	stateStreaming
 	stateApproving
+	stateResuming
 )
 
 type Model struct {
@@ -46,6 +50,10 @@ type Model struct {
 	conv             *conversation.Conversation
 	runner           agent.Runner
 	compactRuntime   *compact.Runtime
+	sessionCtx       session.Context
+	sessionWriter    *session.Writer
+	instructions     string
+	memory           *memory.Manager
 	events           <-chan agent.Event
 	cancel           context.CancelFunc
 	curReply         string
@@ -60,6 +68,8 @@ type Model struct {
 	permissionEngine *permission.Engine
 	pendingApproval  *agent.ApprovalRequest
 	approvalCursor   int
+	resumeChoices    []resumeChoice
+	resumeCursor     int
 	showBanner       bool
 	turnStart        time.Time
 	elapsed          time.Duration
@@ -153,7 +163,6 @@ func New(providers []config.ProviderConfig, cwd string, registry *tools.Registry
 		viewport:         vp,
 		renderer:         renderer,
 		providers:        providers,
-		conv:             &conversation.Conversation{},
 		width:            80,
 		height:           24,
 		initErr:          err,
@@ -170,6 +179,26 @@ func New(providers []config.ProviderConfig, cwd string, registry *tools.Registry
 		m.appendTranscript(transcriptEntry{kind: transcriptError, text: "compact runtime 初始化失败: " + compactErr.Error()})
 	} else {
 		m.compactRuntime = runtime
+		snapshot := runtime.Snapshot()
+		m.sessionCtx = session.Context{
+			ID:        snapshot.Session.ID,
+			Dir:       snapshot.Session.RootDir,
+			JSONLPath: filepath.Join(snapshot.Session.RootDir, session.ConversationFileName),
+			SpillDir:  snapshot.Session.SpillDir,
+		}
+		writer, err := session.NewWriter(m.sessionCtx, "", func(err error) {
+			m.appendTranscript(transcriptEntry{kind: transcriptError, text: "会话写入失败: " + err.Error()})
+		})
+		if err != nil {
+			m.appendTranscript(transcriptEntry{kind: transcriptError, text: "会话写入器初始化失败: " + err.Error()})
+			m.conv = &conversation.Conversation{}
+		} else {
+			m.sessionWriter = writer
+			m.conv = conversation.New(writer.Hooks())
+		}
+	}
+	if m.conv == nil {
+		m.conv = &conversation.Conversation{}
 	}
 	m.runner = agent.Runner{Registry: registry, Env: m.toolEnv, Config: agent.DefaultConfig(), Version: Version, Permission: permissionEngine, Compact: runtime}
 
@@ -183,11 +212,32 @@ func New(providers []config.ProviderConfig, cwd string, registry *tools.Registry
 		}
 		m.provider = provider
 		m.runner.Provider = provider
+		if m.sessionWriter != nil {
+			_ = m.sessionWriter.Close()
+			writer, err := session.OpenWriter(m.sessionCtx, provider.Model(), func(err error) {
+				m.appendTranscript(transcriptEntry{kind: transcriptError, text: "会话写入失败: " + err.Error()})
+			})
+			if err == nil {
+				m.sessionWriter = writer
+				m.conv.SetHooks(writer.Hooks())
+			}
+		}
 		if m.compactRuntime != nil {
 			m.compactRuntime.SetContextWindow(providers[0].EffectiveContextWindow())
 		}
 	}
 
+	return m
+}
+
+func (m Model) WithPersistentContext(instructions string, memoryManager *memory.Manager) Model {
+	m.instructions = instructions
+	m.memory = memoryManager
+	m.runner.Instructions = instructions
+	m.runner.Memory = memoryManager
+	if memoryManager != nil && m.provider != nil {
+		memoryManager.SetProvider(m.provider)
+	}
 	return m
 }
 
@@ -241,6 +291,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateStreaming(msg)
 	case stateApproving:
 		return m.updateApproving(msg)
+	case stateResuming:
+		return m.updateResuming(msg)
 	default:
 		return m.updateIdle(msg)
 	}
@@ -253,6 +305,11 @@ func (m Model) View() tea.View {
 }
 
 func (m Model) Run() error {
+	defer func() {
+		if m.sessionWriter != nil {
+			_ = m.sessionWriter.Close()
+		}
+	}()
 	_, err := tea.NewProgram(m).Run()
 	return err
 }
@@ -264,6 +321,9 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) Model {
 	m.textarea.SetWidth(contentWidth)
 	m = m.syncViewport()
 	if m.state == stateSelecting {
+		m.list.SetSize(contentWidth, max(8, msg.Height-8))
+	}
+	if m.state == stateResuming {
 		m.list.SetSize(contentWidth, max(8, msg.Height-8))
 	}
 	renderer, err := glamour.NewTermRenderer(glamour.WithWordWrap(contentWidth))

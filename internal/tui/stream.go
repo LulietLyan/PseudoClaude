@@ -84,11 +84,35 @@ func (m Model) dispatchCommand(text string) (tea.Model, tea.Cmd) {
 		return m.submit(text)
 	case text == "/compact":
 		return m.startManualCompact()
+	case text == "/memory":
+		return m.showMemory()
+	case text == "/resume":
+		return m.startResume()
 	default:
 		m.textarea.Reset()
-		m.appendTranscript(transcriptEntry{kind: transcriptError, text: "未知命令。可用命令：/plan、/chat、/exit-plan、/do、/compact、/exit"})
+		m.appendTranscript(transcriptEntry{kind: transcriptError, text: "未知命令。可用命令：/plan、/chat、/exit-plan、/do、/compact、/memory、/resume、/exit"})
 		return m, nil
 	}
+}
+
+func (m Model) showMemory() (tea.Model, tea.Cmd) {
+	if m.state != stateIdle {
+		m.appendTranscript(transcriptEntry{kind: transcriptError, text: "当前任务完成后才能查看 memory"})
+		return m, nil
+	}
+	m.textarea.Reset()
+	text := ""
+	if m.memory != nil {
+		text = m.memory.RefreshAndIndexText()
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		text = "暂无长期记忆。"
+	} else {
+		text = "Agent Memory\n\n" + text
+	}
+	m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: text})
+	return m, nil
 }
 
 func (m Model) startManualCompact() (tea.Model, tea.Cmd) {
@@ -140,6 +164,8 @@ func (m Model) submit(text string) (tea.Model, tea.Cmd) {
 	m.runner.Env = m.toolEnv
 	m.runner.Permission = m.permissionEngine
 	m.runner.Compact = m.compactRuntime
+	m.runner.Instructions = m.instructions
+	m.runner.Memory = m.memory
 	m.events = m.runner.Run(ctx, req)
 	m.turnStart = time.Now()
 	m.elapsed = 0

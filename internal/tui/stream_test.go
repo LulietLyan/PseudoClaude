@@ -12,7 +12,9 @@ import (
 	"PseudoClaude/internal/compact"
 	"PseudoClaude/internal/config"
 	"PseudoClaude/internal/llm"
+	"PseudoClaude/internal/memory"
 	"PseudoClaude/internal/permission"
+	"PseudoClaude/internal/session"
 	"PseudoClaude/internal/tools"
 
 	tea "charm.land/bubbletea/v2"
@@ -399,6 +401,87 @@ func TestManualCompactCommandDoesNotAddUserMessage(t *testing.T) {
 	}
 }
 
+func TestMemoryCommandShowsIndexWithoutSubmitting(t *testing.T) {
+	project := t.TempDir()
+	user := t.TempDir()
+	manager := memory.NewManager(filepath.Join(project, ".PseudoClaude", "memory"), user)
+	if err := os.MkdirAll(user, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(user, memory.IndexFileName), []byte("- [user_preference] User Profile — Go engineer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	model := New([]config.ProviderConfig{}, project, nil).WithPersistentContext("", manager)
+	before := model.conv.Len()
+	model.textarea.SetValue("/memory")
+	next, cmd := model.updateIdle(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(Model)
+	if cmd != nil {
+		t.Fatal("unexpected command")
+	}
+	if model.conv.Len() != before {
+		t.Fatalf("/memory added conversation message: before=%d after=%d", before, model.conv.Len())
+	}
+	if len(model.transcript) == 0 || !strings.Contains(model.transcript[len(model.transcript)-1].text, "Go engineer") {
+		t.Fatalf("missing memory transcript: %+v", model.transcript)
+	}
+}
+
+func TestMemoryCommandEmptyState(t *testing.T) {
+	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
+	model.textarea.SetValue("/memory")
+	next, _ := model.updateIdle(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(Model)
+	if len(model.transcript) == 0 || !strings.Contains(model.transcript[len(model.transcript)-1].text, "暂无长期记忆") {
+		t.Fatalf("missing empty memory state: %+v", model.transcript)
+	}
+}
+
+func TestResumeLightweightSelection(t *testing.T) {
+	workspace := t.TempDir()
+	createTestSession(t, workspace, time.Date(2026, 6, 18, 10, 0, 0, 0, time.Local), "first")
+	createTestSession(t, workspace, time.Date(2026, 6, 18, 11, 0, 0, 0, time.Local), "second")
+	model := New([]config.ProviderConfig{}, workspace, nil)
+
+	model.textarea.SetValue("/resume")
+	next, cmd := model.updateIdle(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(Model)
+	if cmd != nil {
+		t.Fatal("unexpected command")
+	}
+	if model.state != stateResuming || len(model.resumeChoices) != 2 || model.resumeCursor != 0 {
+		t.Fatalf("state=%v choices=%d cursor=%d", model.state, len(model.resumeChoices), model.resumeCursor)
+	}
+	view := model.view()
+	if !strings.Contains(view, "Resume session") || !strings.Contains(view, "second") || strings.Contains(view, "Filter") {
+		t.Fatalf("resume view = %q", view)
+	}
+
+	next, _ = model.updateResuming(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	model = next.(Model)
+	if model.resumeCursor != 1 {
+		t.Fatalf("cursor = %d", model.resumeCursor)
+	}
+	next, _ = model.updateResuming(tea.KeyPressMsg{Code: '1', Text: "1"})
+	model = next.(Model)
+	if model.state != stateIdle || !strings.Contains(model.transcript[len(model.transcript)-1].text, "已恢复会话") {
+		t.Fatalf("resume failed state=%v transcript=%+v", model.state, model.transcript)
+	}
+}
+
+func TestResumeEscCancels(t *testing.T) {
+	workspace := t.TempDir()
+	createTestSession(t, workspace, time.Date(2026, 6, 18, 10, 0, 0, 0, time.Local), "first")
+	model := New([]config.ProviderConfig{}, workspace, nil)
+	next, _ := model.startResume()
+	model = next.(Model)
+	next, _ = model.updateResuming(tea.KeyPressMsg{Code: tea.KeyEsc})
+	model = next.(Model)
+	if model.state != stateIdle || len(model.resumeChoices) != 0 {
+		t.Fatalf("state=%v choices=%d", model.state, len(model.resumeChoices))
+	}
+}
+
 func TestPlanModePersistsForPlainFollowupInput(t *testing.T) {
 	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
 	model.provider = fakeProvider{events: []llm.StreamEvent{{Text: "plan text"}, {Done: true}}}
@@ -412,6 +495,23 @@ func TestPlanModePersistsForPlainFollowupInput(t *testing.T) {
 	if req.Mode != agent.ModePlan || req.PlanTask != "我要做个电商系统" || printable != "我要做个电商系统" {
 		t.Fatalf("request = %+v printable=%q", req, printable)
 	}
+}
+
+func createTestSession(t *testing.T, workspace string, now time.Time, text string) session.Context {
+	t.Helper()
+	ctx, err := session.NewContext(workspace, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := session.NewWriter(ctx, "test-model", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.AppendMessage(llm.Message{Role: "user", Content: text})
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return ctx
 }
 
 func TestPlanStateSavedAndCleared(t *testing.T) {

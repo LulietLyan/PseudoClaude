@@ -5,6 +5,7 @@ import (
 
 	"PseudoClaude/internal/config"
 	"PseudoClaude/internal/llm"
+	"PseudoClaude/internal/session"
 
 	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
@@ -57,6 +58,19 @@ func (m Model) updateSelecting(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.provider = provider
 			m.runner.Provider = provider
+			if m.memory != nil {
+				m.memory.SetProvider(provider)
+			}
+			if m.sessionWriter != nil {
+				_ = m.sessionWriter.Close()
+				writer, err := session.OpenWriter(m.sessionCtx, provider.Model(), func(err error) {
+					m.appendTranscript(transcriptEntry{kind: transcriptError, text: "会话写入失败: " + err.Error()})
+				})
+				if err == nil {
+					m.sessionWriter = writer
+					m.conv.SetHooks(writer.Hooks())
+				}
+			}
 			if m.compactRuntime != nil {
 				m.compactRuntime.SetContextWindow(item.cfg.EffectiveContextWindow())
 			}
