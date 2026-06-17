@@ -2,6 +2,8 @@ package llm
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -86,6 +88,18 @@ func TestOpenAIUsageMapsCachedTokens(t *testing.T) {
 	}
 	if got := openAIUsageFromCompletionUsage(openai.CompletionUsage{}); got != nil {
 		t.Fatalf("empty usage = %+v", got)
+	}
+}
+
+func TestOpenAICompatibleEmptyJSONTail(t *testing.T) {
+	if !isOpenAICompatibleEmptyJSONTail(errors.New("unexpected end of JSON input")) {
+		t.Fatal("expected compatible empty JSON tail")
+	}
+	if !isOpenAICompatibleEmptyJSONTail(io.ErrUnexpectedEOF) {
+		t.Fatal("expected unexpected EOF to match")
+	}
+	if isOpenAICompatibleEmptyJSONTail(errors.New("401 unauthorized")) {
+		t.Fatal("auth error should not match")
 	}
 }
 

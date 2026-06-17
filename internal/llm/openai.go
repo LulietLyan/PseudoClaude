@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 
 	"PseudoClaude/internal/config"
@@ -49,6 +50,7 @@ func (p openAIProvider) Stream(ctx context.Context, req Request) <-chan StreamEv
 			StreamOptions: openai.ChatCompletionStreamOptionsParam{IncludeUsage: openai.Bool(true)},
 		})
 		acc := openai.ChatCompletionAccumulator{}
+		received := false
 		sentTools := make(map[string]bool)
 		for stream.Next() {
 			select {
@@ -58,6 +60,7 @@ func (p openAIProvider) Stream(ctx context.Context, req Request) <-chan StreamEv
 			}
 
 			evt := stream.Current()
+			received = true
 			acc.AddChunk(evt)
 			if usage := openAIUsageFromCompletionUsage(acc.Usage); usage != nil {
 				sendStreamEvent(ctx, ch, StreamEvent{Usage: usage})
@@ -74,23 +77,42 @@ func (p openAIProvider) Stream(ctx context.Context, req Request) <-chan StreamEv
 			}
 		}
 		if err := stream.Err(); err != nil {
+			if received && isOpenAICompatibleEmptyJSONTail(err) {
+				finalizeOpenAIStream(ctx, ch, acc, sentTools)
+				return
+			}
 			sendStreamEvent(ctx, ch, StreamEvent{Err: err})
 			return
 		}
-		if len(acc.Choices) > 0 {
-			for _, call := range acc.Choices[0].Message.ToolCalls {
-				if call.ID == "" || sentTools[call.ID] {
-					continue
-				}
-				sendOpenAIToolCall(ctx, ch, call.ID, call.Function.Name, call.Function.Arguments)
-			}
-		}
-		if usage := openAIUsageFromCompletionUsage(acc.Usage); usage != nil {
-			sendStreamEvent(ctx, ch, StreamEvent{Usage: usage})
-		}
-		sendStreamEvent(ctx, ch, StreamEvent{Done: true})
+		finalizeOpenAIStream(ctx, ch, acc, sentTools)
 	}()
 	return ch
+}
+
+func finalizeOpenAIStream(ctx context.Context, ch chan<- StreamEvent, acc openai.ChatCompletionAccumulator, sentTools map[string]bool) {
+	if len(acc.Choices) > 0 {
+		for _, call := range acc.Choices[0].Message.ToolCalls {
+			if call.ID == "" || sentTools[call.ID] {
+				continue
+			}
+			sendOpenAIToolCall(ctx, ch, call.ID, call.Function.Name, call.Function.Arguments)
+		}
+	}
+	if usage := openAIUsageFromCompletionUsage(acc.Usage); usage != nil {
+		sendStreamEvent(ctx, ch, StreamEvent{Usage: usage})
+	}
+	sendStreamEvent(ctx, ch, StreamEvent{Done: true})
+}
+
+func isOpenAICompatibleEmptyJSONTail(err error) bool {
+	if err == nil {
+		return false
+	}
+	if err == io.ErrUnexpectedEOF || err == io.EOF {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unexpected end of json input") || strings.Contains(msg, "unexpected eof")
 }
 
 func toOpenAIMessages(req Request) []openai.ChatCompletionMessageParamUnion {
