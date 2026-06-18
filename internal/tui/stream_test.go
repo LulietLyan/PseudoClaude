@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -54,7 +55,8 @@ func TestBannerCentersFileLogoAndMeta(t *testing.T) {
 	model.width = 90
 	model.height = 24
 	banner := model.bannerView()
-	if !strings.Contains(banner, "╭") || !strings.Contains(banner, "╯") {
+	plain := stripANSI(banner)
+	if !strings.Contains(plain, "┏") || !strings.Contains(plain, "┗") {
 		t.Fatalf("banner missing frame: %q", banner)
 	}
 	if !strings.Contains(banner, "██████╗") {
@@ -73,7 +75,7 @@ func TestBannerFrameCentersOnWideTerminal(t *testing.T) {
 	model := New(nil, "/tmp/pseudoclaude", nil)
 	model.width = 160
 	model.height = 40
-	banner := model.bannerView()
+	banner := stripANSI(model.bannerView())
 	lines := strings.Split(banner, "\n")
 	if len(lines) == 0 {
 		t.Fatal("banner has no lines")
@@ -81,7 +83,7 @@ func TestBannerFrameCentersOnWideTerminal(t *testing.T) {
 	if got := lipgloss.Width(lines[0]); got != model.width {
 		t.Fatalf("banner line width = %d, want %d: %q", got, model.width, lines[0])
 	}
-	leftPad := strings.Index(lines[0], "╭")
+	leftPad := strings.Index(lines[0], "┏")
 	if leftPad <= 20 {
 		t.Fatalf("frame not visually centered on wide terminal, left pad=%d line=%q", leftPad, lines[0])
 	}
@@ -136,6 +138,40 @@ func TestTranscriptRendersAfterBanner(t *testing.T) {
 	}
 	if !(bannerIndex < userIndex && userIndex < assistantIndex) {
 		t.Fatalf("transcript should render after banner: banner=%d user=%d assistant=%d view=%q", bannerIndex, userIndex, assistantIndex, view)
+	}
+}
+
+func TestUserAndAssistantBlocksUseConsistentChrome(t *testing.T) {
+	user := stripANSI(userBlock("hello", 50))
+	assistant := stripANSI(assistantBlock("world", time.Second, 50, nil))
+	for _, rendered := range []string{user, assistant} {
+		if !strings.Contains(rendered, "━") || !strings.Contains(rendered, "┃") {
+			t.Fatalf("block should use thick border: %q", rendered)
+		}
+	}
+	userLines := strings.Split(user, "\n")
+	assistantLines := strings.Split(assistant, "\n")
+	if len(userLines) < 6 || len(assistantLines) < 6 {
+		t.Fatalf("unexpected blocks:\n%s\n%s", user, assistant)
+	}
+	if userLines[1] != assistantLines[1] || strings.Contains(userLines[1], "You") || strings.Contains(assistantLines[1], "Assistant") {
+		t.Fatalf("top padding should match:\nuser=%q\nassistant=%q", userLines[1], assistantLines[1])
+	}
+	if !strings.Contains(userLines[2], "You") || !strings.Contains(userLines[4], "hello") {
+		t.Fatalf("user label/body spacing is wrong: %q", user)
+	}
+	if !strings.Contains(assistantLines[2], "Assistant") || !strings.Contains(assistantLines[4], "world") {
+		t.Fatalf("assistant label/body spacing is wrong: %q", assistant)
+	}
+}
+
+func TestBannerUsesThickFrame(t *testing.T) {
+	model := New(nil, t.TempDir(), nil)
+	model.width = 90
+	model.height = 24
+	banner := model.bannerView()
+	if !strings.Contains(banner, "┏") || !strings.Contains(banner, "┗") || !strings.Contains(banner, "━") {
+		t.Fatalf("banner should use thick frame: %q", banner)
 	}
 }
 
@@ -661,21 +697,27 @@ func TestInputAndStatusUseCenteredColumn(t *testing.T) {
 	if got, want := model.contentWidth(), 126; got != want {
 		t.Fatalf("content width = %d, want %d", got, want)
 	}
-	view := model.view()
+	view := stripANSI(model.view())
 	lines := strings.Split(view, "\n")
 	var inputLine, statusLine string
 	for _, line := range lines {
-		if strings.Contains(line, "╭") && strings.Contains(line, "─") && !strings.Contains(line, "PseudoClaude") {
+		if strings.Contains(line, "┏") && strings.Contains(line, "━") && !strings.Contains(line, "PseudoClaude") {
 			inputLine = line
 		}
 		if strings.Contains(line, "DEFAULT") {
 			statusLine = line
 		}
 	}
-	if strings.Index(inputLine, "╭") <= 10 {
+	if strings.Index(inputLine, "┏") < 5 {
 		t.Fatalf("input should be centered away from edge: %q", inputLine)
 	}
-	if strings.Index(statusLine, "DEFAULT") <= 10 {
+	if strings.Index(statusLine, "DEFAULT") < 5 {
 		t.Fatalf("status should be centered away from edge: %q", statusLine)
 	}
+}
+
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func stripANSI(s string) string {
+	return ansiRE.ReplaceAllString(s, "")
 }

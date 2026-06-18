@@ -19,7 +19,7 @@ var (
 	columnStyle = lipgloss.NewStyle().
 			Align(lipgloss.Left)
 	inputBoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
+			Border(lipgloss.ThickBorder()).
 			BorderForeground(lipgloss.Color("63")).
 			Padding(0, 2)
 	statusStyle = lipgloss.NewStyle().
@@ -28,15 +28,21 @@ var (
 	errorStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("203"))
 	userFrameStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
+			Border(lipgloss.ThickBorder()).
 			BorderForeground(lipgloss.Color("81")).
 			Foreground(lipgloss.Color("231")).
-			Padding(0, 2)
+			Padding(1, 2)
 	assistantFrameStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
+				Border(lipgloss.ThickBorder()).
 				BorderForeground(lipgloss.Color("114")).
 				Foreground(lipgloss.Color("252")).
 				Padding(1, 2)
+	userLabelStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("81")).
+			Bold(true)
+	assistantLabelStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("114")).
+				Bold(true)
 	statusFrameStyle = lipgloss.NewStyle().
 				Border(lipgloss.NormalBorder()).
 				BorderForeground(lipgloss.Color("244")).
@@ -73,7 +79,7 @@ var (
 	logoStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("220"))
 	bannerFrameStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
+				Border(lipgloss.ThickBorder()).
 				BorderForeground(lipgloss.Color("240")).
 				Padding(1, 3)
 	bannerTitleStyle = lipgloss.NewStyle().
@@ -348,7 +354,11 @@ func permissionModeLabel(mode permission.Mode) string {
 }
 
 func userBlock(text string, width int) string {
-	return userFrameStyle.Width(width).Render("You\n" + text)
+	body := strings.TrimSpace(text)
+	if body == "" {
+		body = "(empty message)"
+	}
+	return userFrameStyle.Width(width).Render(userLabelStyle.Render("You") + "\n\n" + body)
 }
 
 func statusMessageBlock(message string, width int) string {
@@ -365,7 +375,7 @@ func assistantBlock(reply string, elapsed time.Duration, width int, renderer *gl
 	if rendered == "" {
 		rendered = "(empty response)"
 	}
-	return assistantFrameStyle.Width(width).Render(fmt.Sprintf("Assistant\n%s\n\nDone in %.1fs", rendered, elapsed.Seconds()))
+	return assistantFrameStyle.Width(width).Render(fmt.Sprintf("%s\n\n%s\n\nDone in %.1fs", assistantLabelStyle.Render("Assistant"), rendered, elapsed.Seconds()))
 }
 
 func errorBlock(err error) string {
