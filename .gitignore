@@ -1,4 +1,10 @@
 .PseudoClaude/config.yaml
 .PseudoClaude/permissions.local.yaml
 .PseudoClaude/sessions/
+.PseudoClaude/memory/
+.PseudoClaude/*.example
+docs/
+PSEUDOCLAUDE.md
+.DS_Store
+**/.DS_Store
 /PseudoClaude
