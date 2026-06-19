@@ -361,24 +361,22 @@ func TestPlanAndDoInputHandling(t *testing.T) {
 	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
 	model.provider = fakeProvider{events: []llm.StreamEvent{{Text: "plan text"}, {Done: true}}}
 	model.runner.Provider = model.provider
+	model.planMode = true
 
-	req, printable, err := model.requestForInput("/plan change the thing")
+	req, printable, err := model.requestForInput("change the thing")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if req.Mode != agent.ModePlan || req.PlanTask != "change the thing" || printable != "/plan change the thing" {
+	if req.Mode != agent.ModePlan || req.PlanTask != "change the thing" || printable != "change the thing" {
 		t.Fatalf("plan request = %+v printable=%q", req, printable)
 	}
-	if _, _, err := model.requestForInput("/do"); err == nil {
-		t.Fatal("expected missing plan error")
-	}
-	model.lastPlan = &planState{task: "change the thing", text: "plan text"}
-	req, _, err = model.requestForInput("/do")
+	model.planMode = false
+	req, printable, err = model.requestForInput("do the thing")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if req.Mode != agent.ModeDo || req.PlanTask != "change the thing" || req.PlanText != "plan text" {
-		t.Fatalf("do request = %+v", req)
+	if req.Mode != agent.ModeChat || req.UserText != "do the thing" || printable != "do the thing" {
+		t.Fatalf("chat request = %+v printable=%q", req, printable)
 	}
 }
 
@@ -393,8 +391,8 @@ func TestUnknownSlashCommandDoesNotSubmitUserMessage(t *testing.T) {
 	if model.conv.Len() != 0 {
 		t.Fatalf("conversation length = %d", model.conv.Len())
 	}
-	if len(model.transcript) == 0 || model.transcript[len(model.transcript)-1].kind != transcriptError {
-		t.Fatalf("missing command error transcript: %+v", model.transcript)
+	if len(model.transcript) == 0 || model.transcript[len(model.transcript)-1].kind != transcriptHelp || !strings.Contains(model.transcript[len(model.transcript)-1].text, "/help") {
+		t.Fatalf("missing command help transcript: %+v", model.transcript)
 	}
 }
 
@@ -479,8 +477,7 @@ func TestResumeLightweightSelection(t *testing.T) {
 	createTestSession(t, workspace, time.Date(2026, 6, 18, 11, 0, 0, 0, time.Local), "second")
 	model := New([]config.ProviderConfig{}, workspace, nil)
 
-	model.textarea.SetValue("/resume")
-	next, cmd := model.updateIdle(tea.KeyPressMsg{Code: tea.KeyEnter})
+	next, cmd := model.startResume()
 	model = next.(Model)
 	if cmd != nil {
 		t.Fatal("unexpected command")
@@ -586,10 +583,7 @@ func TestPermissionModeSwitchAndRequest(t *testing.T) {
 		t.Fatalf("request permission mode = %s", req.PermissionMode)
 	}
 	req, _, err = model.requestForInput("/plan inspect")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if req.PermissionMode != permission.ModeAcceptEdits || req.Mode != agent.ModePlan {
+	if err != nil || req.PermissionMode != permission.ModeAcceptEdits || req.Mode != agent.ModeChat {
 		t.Fatalf("plan request = %+v", req)
 	}
 }
@@ -652,7 +646,7 @@ func TestStatusBarShowsPermissionMode(t *testing.T) {
 	model.permissionMode = permission.ModeStrict
 	model.planMode = true
 	status := model.statusBar(model.contentWidth())
-	if !strings.Contains(status, "STRICT") || !strings.Contains(status, "PLAN WORKFLOW") {
+	if !strings.Contains(status, "STRICT") || !strings.Contains(status, "[PLAN]") {
 		t.Fatalf("status missing mode/plan: %q", status)
 	}
 	if strings.Contains(status, " fake ") {

@@ -48,6 +48,12 @@ var (
 				BorderForeground(lipgloss.Color("244")).
 				Foreground(lipgloss.Color("244")).
 				Padding(0, 2)
+	helpFrameStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("117")).
+			Foreground(lipgloss.Color("117")).
+			Bold(true).
+			Padding(0, 2)
 	errorFrameStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("203")).
@@ -111,6 +117,9 @@ func (m Model) view() string {
 	}
 
 	bottomParts = append(bottomParts, m.centeredColumn(inputBoxStyle.Width(columnWidth).Render(m.textarea.View())))
+	if completion := m.completionView(columnWidth); completion != "" {
+		bottomParts = append(bottomParts, m.centeredColumn(completion))
+	}
 	bottomParts = append(bottomParts, m.centeredColumn(m.statusBar(columnWidth)))
 	bottom := strings.Join(bottomParts, "\n")
 	if m.height > 0 {
@@ -197,6 +206,8 @@ func (m Model) renderTranscriptEntry(entry transcriptEntry, width int) string {
 		return toolResultBlock(entry.result, entry.elapsed, width)
 	case transcriptError:
 		return errorBlockString(entry.text, width)
+	case transcriptHelp:
+		return helpBlock(entry.text, width)
 	case transcriptStop:
 		return stopBlock(entry.stop, width)
 	default:
@@ -218,7 +229,7 @@ func (m Model) bannerView() string {
 		"",
 		centerLine(bannerTitleStyle.Render("PseudoClaude v"+Version), contentWidth),
 		centerLine(bannerMetaStyle.Render(fitLine("cwd: "+m.cwd, contentWidth)), contentWidth),
-		centerLine(bannerMetaStyle.Render("Ready. Shift+Tab cycles permission mode."), contentWidth),
+		centerLine(bannerMetaStyle.Render("Ready. Shift+Tab cycles permission mode. Type /help for commands."), contentWidth),
 	)
 	for _, status := range m.startupStatus {
 		lines = append(lines, centerLine(bannerMetaStyle.Render(fitLine(status, contentWidth)), contentWidth))
@@ -250,13 +261,14 @@ func (m Model) streamingView(width int) string {
 
 func (m Model) statusBar(width int) string {
 	width = max(3, width)
-	left := permissionModeLabel(m.permissionMode)
+	mode := "[DEFAULT]"
+	if m.planMode {
+		mode = "[PLAN]"
+	}
+	left := mode + " · " + permissionModeLabel(m.permissionMode)
 	right := ""
 	if m.provider != nil {
 		right = m.provider.Model()
-	}
-	if m.planMode {
-		left += " · PLAN WORKFLOW"
 	}
 	if m.lastStop != nil && m.lastStop.Reason != "" {
 		left += " · " + string(m.lastStop.Reason)
@@ -363,6 +375,13 @@ func userBlock(text string, width int) string {
 
 func statusMessageBlock(message string, width int) string {
 	return statusFrameStyle.Width(width).Render(message)
+}
+
+func helpBlock(message string, width int) string {
+	if strings.TrimSpace(message) == "" {
+		message = "Type /help to view available commands."
+	}
+	return helpFrameStyle.Width(width).Render(message)
 }
 
 func assistantBlock(reply string, elapsed time.Duration, width int, renderer *glamour.TermRenderer) string {

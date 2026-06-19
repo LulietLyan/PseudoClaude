@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"PseudoClaude/internal/agent"
+	"PseudoClaude/internal/command"
 	"PseudoClaude/internal/compact"
 	"PseudoClaude/internal/config"
 	"PseudoClaude/internal/conversation"
@@ -79,6 +80,8 @@ type Model struct {
 	cwd              string
 	startupStatus    []string
 	registry         *tools.Registry
+	commandRegistry  *command.Registry
+	completion       completionState
 	toolEnv          tools.Env
 	stickToBottom    bool
 }
@@ -102,6 +105,7 @@ const (
 	transcriptTool
 	transcriptStatus
 	transcriptError
+	transcriptHelp
 	transcriptStop
 )
 
@@ -168,6 +172,7 @@ func New(providers []config.ProviderConfig, cwd string, registry *tools.Registry
 		initErr:          err,
 		cwd:              cwd,
 		registry:         registry,
+		commandRegistry:  command.NewBuiltinRegistry(),
 		toolEnv:          tools.DefaultEnv(cwd),
 		permissionMode:   permissionMode,
 		permissionEngine: permissionEngine,
@@ -398,6 +403,9 @@ func (m Model) syncViewport() Model {
 		bottomParts = append(bottomParts, m.centeredColumn(m.approvalBlock(columnWidth)))
 	}
 	bottomParts = append(bottomParts, m.centeredColumn(inputBoxStyle.Width(columnWidth).Render(m.textarea.View())))
+	if completion := m.completionView(columnWidth); completion != "" {
+		bottomParts = append(bottomParts, m.centeredColumn(completion))
+	}
 	bottomParts = append(bottomParts, m.centeredColumn(m.statusBar(columnWidth)))
 	bottom := strings.Join(bottomParts, "\n")
 	if m.height > 0 {

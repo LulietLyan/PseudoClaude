@@ -33,6 +33,9 @@ func waitForAgentEvent(ch <-chan agent.Event) tea.Cmd {
 func (m Model) updateIdle(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		if next, cmd, ok := m.handleCompletionKey(msg); ok {
+			return next, cmd
+		}
 		if msg.String() == "shift+tab" {
 			m.permissionMode = permission.NextMode(m.permissionMode)
 			m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "Permission mode: " + m.permissionMode.String()})
@@ -43,13 +46,10 @@ func (m Model) updateIdle(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if text == "" {
 				return m, nil
 			}
-			if text == "/exit" {
-				return m, tea.Quit
+			if next, cmd, handled := m.dispatchInput(text); handled {
+				return next, cmd
 			}
-			if strings.HasPrefix(text, "/") {
-				return m.dispatchCommand(text)
-			}
-			return m.submit(text)
+			return m.submitUserText(text)
 		}
 	case compactMsg:
 		m.progress = ""
@@ -65,54 +65,8 @@ func (m Model) updateIdle(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.textarea, cmd = m.textarea.Update(msg)
+	m = m.updateCompletionFromInput()
 	return m, cmd
-}
-
-func (m Model) dispatchCommand(text string) (tea.Model, tea.Cmd) {
-	switch {
-	case text == "/plan":
-		m.planMode = true
-		m.textarea.Reset()
-		m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "Plan Mode 已开启。接下来的输入会只使用只读工具；输入 /do 执行最近计划。"})
-		return m, nil
-	case text == "/chat" || text == "/exit-plan":
-		m.planMode = false
-		m.textarea.Reset()
-		m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "Plan Mode 已关闭。"})
-		return m, nil
-	case text == "/do" || strings.HasPrefix(text, "/plan "):
-		return m.submit(text)
-	case text == "/compact":
-		return m.startManualCompact()
-	case text == "/memory":
-		return m.showMemory()
-	case text == "/resume":
-		return m.startResume()
-	default:
-		m.textarea.Reset()
-		m.appendTranscript(transcriptEntry{kind: transcriptError, text: "未知命令。可用命令：/plan、/chat、/exit-plan、/do、/compact、/memory、/resume、/exit"})
-		return m, nil
-	}
-}
-
-func (m Model) showMemory() (tea.Model, tea.Cmd) {
-	if m.state != stateIdle {
-		m.appendTranscript(transcriptEntry{kind: transcriptError, text: "当前任务完成后才能查看 memory"})
-		return m, nil
-	}
-	m.textarea.Reset()
-	text := ""
-	if m.memory != nil {
-		text = m.memory.RefreshAndIndexText()
-	}
-	text = strings.TrimSpace(text)
-	if text == "" {
-		text = "暂无长期记忆。"
-	} else {
-		text = "Agent Memory\n\n" + text
-	}
-	m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: text})
-	return m, nil
 }
 
 func (m Model) startManualCompact() (tea.Model, tea.Cmd) {
@@ -143,7 +97,19 @@ func (m Model) startManualCompact() (tea.Model, tea.Cmd) {
 	}, m.spinner.Tick)
 }
 
-func (m Model) submit(text string) (tea.Model, tea.Cmd) {
+func (m Model) submitUserText(text string) (tea.Model, tea.Cmd) {
+	return m.submitAgentText(text, text)
+}
+
+func (m Model) submitPresetText(displayLabel, prompt string) (tea.Model, tea.Cmd) {
+	printable := strings.TrimSpace(displayLabel)
+	if printable == "" {
+		printable = prompt
+	}
+	return m.submitAgentText(prompt, printable)
+}
+
+func (m Model) submitAgentText(text, printableOverride string) (tea.Model, tea.Cmd) {
 	if m.provider == nil {
 		m.appendTranscript(transcriptEntry{kind: transcriptError, text: "provider 尚未初始化"})
 		return m, nil
@@ -153,8 +119,8 @@ func (m Model) submit(text string) (tea.Model, tea.Cmd) {
 		m.appendTranscript(transcriptEntry{kind: transcriptError, text: err.Error()})
 		return m, nil
 	}
-	if strings.HasPrefix(text, "/plan") {
-		m.planMode = true
+	if strings.TrimSpace(printableOverride) != "" {
+		printable = printableOverride
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -175,6 +141,7 @@ func (m Model) submit(text string) (tea.Model, tea.Cmd) {
 	m.usage = nil
 	m.lastStop = nil
 	m.textarea.Reset()
+	m.completion = completionState{}
 	m.state = stateStreaming
 	m.appendTranscript(transcriptEntry{kind: transcriptUser, text: printable})
 
@@ -186,17 +153,6 @@ func (m Model) submit(text string) (tea.Model, tea.Cmd) {
 
 func (m Model) requestForInput(text string) (agent.Request, string, error) {
 	switch {
-	case strings.HasPrefix(text, "/plan"):
-		task := strings.TrimSpace(strings.TrimPrefix(text, "/plan"))
-		if task == "" {
-			return agent.Request{}, "", fmt.Errorf("/plan 后面需要任务内容")
-		}
-		return agent.Request{Mode: agent.ModePlan, PlanTask: task, PermissionMode: m.permissionMode, Conversation: m.conv}, "/plan " + task, nil
-	case text == "/do":
-		if m.lastPlan == nil || strings.TrimSpace(m.lastPlan.text) == "" {
-			return agent.Request{}, "", fmt.Errorf("没有可执行的最近计划，请先使用 /plan <任务>")
-		}
-		return agent.Request{Mode: agent.ModeDo, PlanTask: m.lastPlan.task, PlanText: m.lastPlan.text, PermissionMode: m.permissionMode, Conversation: m.conv}, "/do", nil
 	case m.planMode:
 		return agent.Request{Mode: agent.ModePlan, PlanTask: text, PermissionMode: m.permissionMode, Conversation: m.conv}, text, nil
 	default:
