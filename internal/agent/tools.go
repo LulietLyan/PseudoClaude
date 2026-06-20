@@ -18,6 +18,7 @@ type toolBatch struct {
 
 type toolExecutionOptions struct {
 	AllowedSafety map[tools.Safety]bool
+	AllowedNames  map[string]bool
 }
 
 type indexedToolCall struct {
@@ -110,6 +111,9 @@ func executeOneTool(ctx context.Context, registry *tools.Registry, env tools.Env
 }
 
 func permissionCheckedTool(ctx context.Context, registry *tools.Registry, env tools.Env, iteration int, call llm.ToolCall, events chan<- Event, opts toolExecutionOptions, engine *permission.Engine, mode permission.Mode) tools.Result {
+	if isProtectedSystemTool(registry, call.Name) {
+		return executeAllowedTool(ctx, registry, env, call, opts)
+	}
 	if engine == nil {
 		return executeAllowedTool(ctx, registry, env, call, opts)
 	}
@@ -151,6 +155,9 @@ func permissionCheckedTool(ctx context.Context, registry *tools.Registry, env to
 func executeAllowedTool(ctx context.Context, registry *tools.Registry, env tools.Env, call llm.ToolCall, opts toolExecutionOptions) tools.Result {
 	if safety, ok := registry.Safety(call.Name); ok && !opts.allows(safety) {
 		return tools.Failure(call.Name, "tool_not_allowed", "tool is not available in the current mode", map[string]any{"call_id": call.ID, "safety": string(safety)})
+	}
+	if !opts.allowsName(registry, call.Name) {
+		return tools.Failure(call.Name, "tool_not_allowed", "tool is not available for the active skill", map[string]any{"call_id": call.ID})
 	}
 	return registry.Execute(ctx, tools.Call{
 		ID:        call.ID,
@@ -240,6 +247,23 @@ func (opts toolExecutionOptions) allows(safety tools.Safety) bool {
 		return true
 	}
 	return opts.AllowedSafety[safety]
+}
+
+func (opts toolExecutionOptions) allowsName(registry *tools.Registry, name string) bool {
+	if len(opts.AllowedNames) == 0 {
+		return true
+	}
+	if isProtectedSystemTool(registry, name) {
+		return true
+	}
+	return opts.AllowedNames[name]
+}
+
+func isProtectedSystemTool(registry *tools.Registry, name string) bool {
+	if name == "load_skill" {
+		return true
+	}
+	return registry != nil && registry.IsSystem(name)
 }
 
 func orderedResults(results []ToolResult, filled []bool) []ToolResult {

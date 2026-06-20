@@ -14,6 +14,7 @@ import (
 	"PseudoClaude/internal/conversation"
 	"PseudoClaude/internal/llm"
 	"PseudoClaude/internal/permission"
+	"PseudoClaude/internal/prompt"
 	"PseudoClaude/internal/tools"
 )
 
@@ -55,11 +56,12 @@ type scriptedTool struct {
 type fakeExecTool struct {
 	name     string
 	safety   tools.Safety
+	system   bool
 	executed *bool
 }
 
 func (f fakeExecTool) Definition() tools.Definition {
-	return tools.Definition{Name: f.name, Description: "fake exec", InputSchema: map[string]any{"type": "object"}, Safety: f.safety}
+	return tools.Definition{Name: f.name, Description: "fake exec", InputSchema: map[string]any{"type": "object"}, Safety: f.safety, System: f.system}
 }
 
 func (f fakeExecTool) Execute(ctx context.Context, input json.RawMessage, env tools.Env) tools.Result {
@@ -609,6 +611,92 @@ func TestRunnerPlanAndDoModesSelectToolsAndPrompt(t *testing.T) {
 	}
 	if provider.requests[1].Reminder != "" {
 		t.Fatalf("do reminder = %q", provider.requests[1].Reminder)
+	}
+}
+
+func TestRunnerIncludesSkillsCatalogAndActiveSkills(t *testing.T) {
+	provider := &fakeProvider{streams: [][]llm.StreamEvent{{{Text: "done"}, {Done: true}}}}
+	var conv conversation.Conversation
+	events := collectEvents(Runner{
+		Provider: provider,
+		Registry: nil,
+		SkillsCatalog: func() []prompt.SkillCatalogItem {
+			return []prompt.SkillCatalogItem{{Name: "demo", Description: "Demo skill."}}
+		},
+		ActiveSkills: func() []prompt.ActiveSkillEntry {
+			return []prompt.ActiveSkillEntry{{Name: "demo", Body: "Full SOP"}}
+		},
+	}.Run(context.Background(), Request{UserText: "hi", Conversation: &conv}))
+	if lastStop(t, events).Reason != StopCompleted {
+		t.Fatalf("events = %+v", events)
+	}
+	req := provider.requests[0]
+	if !strings.Contains(req.System.Stable, "Available Skills") || !strings.Contains(req.System.Stable, "demo: Demo skill.") {
+		t.Fatalf("stable = %q", req.System.Stable)
+	}
+	if !strings.Contains(req.System.Environment, "## Active Skills") || !strings.Contains(req.System.Environment, "Full SOP") {
+		t.Fatalf("environment = %q", req.System.Environment)
+	}
+}
+
+func TestToolNameFiltering(t *testing.T) {
+	provider := &fakeProvider{streams: [][]llm.StreamEvent{
+		{{ToolCall: &llm.ToolCall{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{}`)}}, {Done: true}},
+		{{Text: "done"}, {Done: true}},
+	}}
+	executed := false
+	registry, _ := tools.NewRegistry(
+		fakeExecTool{name: "read_file", safety: tools.SafetyReadOnly},
+		fakeExecTool{name: "write_file", safety: tools.SafetySideEffect, executed: &executed},
+	)
+	var conv conversation.Conversation
+	events := collectEvents(Runner{Provider: provider, Registry: registry, AllowedTools: []string{"read_file"}}.Run(context.Background(), Request{UserText: "try", Conversation: &conv}))
+	if lastStop(t, events).Reason != StopCompleted {
+		t.Fatalf("events = %+v", events)
+	}
+	if executed {
+		t.Fatal("filtered tool executed")
+	}
+	if len(provider.requests[0].Tools) != 1 || provider.requests[0].Tools[0].Name != "read_file" {
+		t.Fatalf("tools = %+v", provider.requests[0].Tools)
+	}
+	var found bool
+	for _, msg := range conv.Messages() {
+		if msg.ToolResult != nil && strings.Contains(msg.ToolResult.Content, "tool_not_allowed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("messages = %+v", conv.Messages())
+	}
+}
+
+func TestSystemToolBypassesPermissionEngine(t *testing.T) {
+	provider := &fakeProvider{streams: [][]llm.StreamEvent{
+		{{ToolCall: &llm.ToolCall{ID: "load", Name: "load_skill", Arguments: json.RawMessage(`{"name":"frontend"}`)}}, {Done: true}},
+		{{Text: "done"}, {Done: true}},
+	}}
+	executed := false
+	registry, _ := tools.NewRegistry(fakeExecTool{name: "load_skill", safety: tools.SafetyReadOnly, executed: &executed})
+	var conv conversation.Conversation
+	events := collectEvents(Runner{Provider: provider, Registry: registry, Permission: newTestPermissionEngine(t)}.Run(context.Background(), Request{
+		UserText:       "load frontend",
+		PermissionMode: permission.ModeBypassPermissions,
+		Conversation:   &conv,
+	}))
+	if lastStop(t, events).Reason != StopCompleted {
+		t.Fatalf("events = %+v", events)
+	}
+	if !executed {
+		t.Fatal("system tool did not execute")
+	}
+	for _, event := range events {
+		if event.Type == EventApproval {
+			t.Fatalf("system tool should not request approval: %+v", events)
+		}
+		if event.ToolResult != nil && event.ToolResult.Result.ErrorType == "permission_error" {
+			t.Fatalf("unexpected permission error: %+v", event.ToolResult.Result)
+		}
 	}
 }
 

@@ -18,15 +18,18 @@ import (
 const planReminderInterval = 4
 
 type Runner struct {
-	Provider     llm.Provider
-	Registry     *tools.Registry
-	Env          tools.Env
-	Config       Config
-	Version      string
-	Permission   *permission.Engine
-	Compact      *compact.Runtime
-	Instructions string
-	Memory       MemoryUpdater
+	Provider      llm.Provider
+	Registry      *tools.Registry
+	Env           tools.Env
+	Config        Config
+	Version       string
+	Permission    *permission.Engine
+	Compact       *compact.Runtime
+	Instructions  string
+	Memory        MemoryUpdater
+	SkillsCatalog func() []prompt.SkillCatalogItem
+	ActiveSkills  func() []prompt.ActiveSkillEntry
+	AllowedTools  []string
 }
 
 type MemoryUpdater interface {
@@ -49,7 +52,7 @@ type Request struct {
 }
 
 func DefaultConfig() Config {
-	return Config{MaxIterations: 10, MaxUnknownToolCalls: 2}
+	return Config{MaxIterations: 15, MaxUnknownToolCalls: 2}
 }
 
 func (c Config) normalize() Config {
@@ -105,8 +108,11 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 	if r.Memory != nil {
 		memoryIndex = r.Memory.IndexText()
 	}
-	stableSystem := prompt.BuildSystemPrompt(prompt.PromptInputs{Instructions: r.Instructions, Memory: memoryIndex})
-	environment := prompt.GatherEnvironment(r.Version, r.Provider.Name(), r.Provider.Model(), r.Env.CWD).Render()
+	stableSystem := prompt.BuildSystemPrompt(prompt.PromptInputs{
+		Instructions:  r.Instructions,
+		SkillsCatalog: prompt.RenderSkillsCatalog(r.skillCatalogItems()),
+		Memory:        memoryIndex,
+	})
 	sendEvent(ctx, events, Event{Type: EventProgress, Message: "agent run started"})
 
 	unknownCount := 0
@@ -145,6 +151,10 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 		}
 
 		collector := &streamCollector{}
+		environment := prompt.GatherEnvironment(r.Version, r.Provider.Name(), r.Provider.Model(), r.Env.CWD).Render()
+		if active := prompt.RenderActiveSkills(r.activeSkillEntries()); active != "" {
+			environment = strings.TrimSpace(environment) + "\n\n" + active
+		}
 		modelReq := llm.Request{
 			Messages: req.Conversation.Messages(),
 			Tools:    defs,
@@ -222,16 +232,56 @@ func (r Runner) prepareRequest(req Request) (string, []tools.Definition, toolExe
 	if r.Registry == nil {
 		return requestText(req), nil, toolExecutionOptions{}
 	}
+	allowedNames := allowedNameSet(r.AllowedTools)
 	switch req.Mode {
 	case ModePlan:
-		return planPrompt(req.PlanTask), r.Registry.DefinitionsBySafety(tools.SafetyReadOnly), toolExecutionOptions{
+		return planPrompt(req.PlanTask), filterDefinitionsBySafety(r.Registry.DefinitionsFiltered(r.AllowedTools), tools.SafetyReadOnly), toolExecutionOptions{
 			AllowedSafety: map[tools.Safety]bool{tools.SafetyReadOnly: true},
+			AllowedNames:  allowedNames,
 		}
 	case ModeDo:
-		return doPrompt(req.PlanTask, req.PlanText), r.Registry.Definitions(), toolExecutionOptions{}
+		return doPrompt(req.PlanTask, req.PlanText), r.Registry.DefinitionsFiltered(r.AllowedTools), toolExecutionOptions{AllowedNames: allowedNames}
 	default:
-		return requestText(req), r.Registry.Definitions(), toolExecutionOptions{}
+		return requestText(req), r.Registry.DefinitionsFiltered(r.AllowedTools), toolExecutionOptions{AllowedNames: allowedNames}
 	}
+}
+
+func (r Runner) skillCatalogItems() []prompt.SkillCatalogItem {
+	if r.SkillsCatalog == nil {
+		return nil
+	}
+	return r.SkillsCatalog()
+}
+
+func (r Runner) activeSkillEntries() []prompt.ActiveSkillEntry {
+	if r.ActiveSkills == nil {
+		return nil
+	}
+	return r.ActiveSkills()
+}
+
+func allowedNameSet(names []string) map[string]bool {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+func filterDefinitionsBySafety(defs []tools.Definition, safety tools.Safety) []tools.Definition {
+	out := make([]tools.Definition, 0, len(defs))
+	for _, def := range defs {
+		if def.Safety == safety {
+			out = append(out, def)
+		}
+	}
+	return out
 }
 
 func requestText(req Request) string {
