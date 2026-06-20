@@ -11,12 +11,13 @@ import (
 type fakeTool struct {
 	name     string
 	safety   Safety
+	system   bool
 	executed *bool
 	wait     bool
 }
 
 func (f fakeTool) Definition() Definition {
-	return Definition{Name: f.name, Description: "fake", InputSchema: objectSchema(nil), Safety: f.safety}
+	return Definition{Name: f.name, Description: "fake", InputSchema: objectSchema(nil), Safety: f.safety, System: f.system}
 }
 
 func (f fakeTool) Execute(ctx context.Context, input json.RawMessage, env Env) Result {

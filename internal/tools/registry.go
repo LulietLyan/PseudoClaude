@@ -53,6 +53,22 @@ func (r *Registry) Register(tool Tool) error {
 	return nil
 }
 
+func (r *Registry) RegisterOrReplace(tool Tool) error {
+	if tool == nil {
+		return errors.New("tool is nil")
+	}
+	def := tool.Definition()
+	name := strings.TrimSpace(def.Name)
+	if name == "" {
+		return errors.New("tool name is required")
+	}
+	if r.tools == nil {
+		r.tools = make(map[string]Tool)
+	}
+	r.tools[name] = tool
+	return nil
+}
+
 func (r *Registry) Get(name string) (Tool, bool) {
 	if r == nil {
 		return nil, false
@@ -75,6 +91,42 @@ func (r *Registry) Definitions() []Definition {
 		defs = append(defs, r.tools[name].Definition())
 	}
 	return defs
+}
+
+func (r *Registry) Names() []string {
+	if r == nil {
+		return nil
+	}
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (r *Registry) DefinitionsFiltered(allowed []string) []Definition {
+	if r == nil {
+		return nil
+	}
+	if len(allowed) == 0 {
+		return r.Definitions()
+	}
+	allowedSet := make(map[string]bool, len(allowed))
+	for _, name := range allowed {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			allowedSet[name] = true
+		}
+	}
+	defs := r.Definitions()
+	out := make([]Definition, 0, len(defs))
+	for _, def := range defs {
+		if allowedSet[def.Name] || def.System {
+			out = append(out, def)
+		}
+	}
+	return out
 }
 
 func (r *Registry) DefinitionsBySafety(allowed ...Safety) []Definition {
@@ -101,6 +153,14 @@ func (r *Registry) Safety(name string) (Safety, bool) {
 		return "", false
 	}
 	return tool.Definition().Safety, true
+}
+
+func (r *Registry) IsSystem(name string) bool {
+	tool, ok := r.Get(name)
+	if !ok {
+		return false
+	}
+	return tool.Definition().System
 }
 
 func (r *Registry) IsKnown(name string) bool {

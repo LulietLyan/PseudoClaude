@@ -25,8 +25,9 @@ type Module struct {
 }
 
 type PromptInputs struct {
-	Instructions string
-	Memory       string
+	Instructions  string
+	SkillsCatalog string
+	Memory        string
 }
 
 func FixedModules() []Module {
@@ -86,7 +87,7 @@ Report completed work with the important files changed and the validation that a
 func OptionalModules(inputs PromptInputs) []Module {
 	return []Module{
 		{Name: "Custom Instructions", Priority: PriorityCustomInstructions, Content: inputs.Instructions},
-		{Name: "Active Skills", Priority: PriorityActiveSkills},
+		{Name: "Available Skills", Priority: PriorityActiveSkills, Content: inputs.SkillsCatalog},
 		{Name: "Long-Term Memory", Priority: PriorityLongTermMemory, Content: inputs.Memory},
 	}
 }

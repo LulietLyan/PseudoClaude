@@ -12,6 +12,7 @@ type Definition struct {
 	Description string
 	InputSchema map[string]any
 	Safety      Safety
+	System      bool
 }
 
 type Safety string
