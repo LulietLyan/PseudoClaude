@@ -2,7 +2,10 @@
 .PseudoClaude/permissions.local.yaml
 .PseudoClaude/sessions/
 .PseudoClaude/memory/
+.PseudoClaude/skills/
 .PseudoClaude/*.example
+.agents/
+skills-lock.json
 docs/
 PSEUDOCLAUDE.md
 .DS_Store
