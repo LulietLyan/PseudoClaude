@@ -11,7 +11,7 @@ func TestRegistryLookupVisibleAndComplete(t *testing.T) {
 	reg, err := NewRegistry([]Command{
 		{Name: "/status", Aliases: []string{"/st"}, Description: "status", Usage: "/status", Handler: noop},
 		{Name: "/session", Aliases: []string{"/sess"}, Description: "session", Usage: "/session", Handler: noop},
-		{Name: "/secret", Hidden: true, Description: "secret", Usage: "/secret", Handler: noop},
+		{Name: "/secret", Kind: KindSkill, Hidden: true, Description: "secret", Usage: "/secret", Handler: noop},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -32,6 +32,9 @@ func TestRegistryLookupVisibleAndComplete(t *testing.T) {
 	}
 	if items := reg.Complete("/sec"); len(items) != 0 {
 		t.Fatalf("hidden completion = %+v", items)
+	}
+	if cmd, ok := reg.Lookup("/secret"); !ok || cmd.Kind != KindSkill {
+		t.Fatalf("hidden skill command lookup failed: %+v %v", cmd, ok)
 	}
 }
 

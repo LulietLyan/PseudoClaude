@@ -6,6 +6,7 @@ const (
 	KindLocal Kind = iota
 	KindUI
 	KindPrompt
+	KindSkill
 )
 
 type WorkMode string

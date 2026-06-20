@@ -83,3 +83,31 @@ func TestDispatchHandlerError(t *testing.T) {
 		t.Fatalf("err = %v", got.Err)
 	}
 }
+
+func TestDispatchHiddenSkillCommand(t *testing.T) {
+	called := false
+	reg := MustNewRegistry([]Command{
+		{Name: "/skill:review", Kind: KindSkill, Hidden: true, Handler: func(Context, Controller) error {
+			called = true
+			return nil
+		}},
+	})
+	ctl := &fakeController{idle: true}
+	got := Dispatch(reg, "/skill:review", ctl)
+	if !got.Handled || got.Kind != KindSkill || !called {
+		t.Fatalf("skill dispatch result=%+v called=%v", got, called)
+	}
+	if visible := reg.Visible(); len(visible) != 0 {
+		t.Fatalf("hidden skill command should not be visible: %+v", visible)
+	}
+	if items := reg.Complete("/skill"); len(items) != 0 {
+		t.Fatalf("hidden skill command should not complete: %+v", items)
+	}
+
+	called = false
+	ctl = &fakeController{idle: false}
+	got = Dispatch(reg, "/skill:review", ctl)
+	if !got.Handled || got.Kind != KindSkill || called || len(ctl.messages) == 0 || !strings.Contains(ctl.messages[0], "wait") {
+		t.Fatalf("non-idle skill dispatch result=%+v called=%v messages=%+v", got, called, ctl.messages)
+	}
+}

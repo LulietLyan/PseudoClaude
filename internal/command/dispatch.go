@@ -24,11 +24,15 @@ func Dispatch(reg *Registry, input string, ctl Controller) DispatchResult {
 		ctl.Show(MessageHelp, "Invalid usage for "+cmd.Name+".\n"+FormatHelpHint())
 		return result
 	}
-	if (cmd.Kind == KindUI || cmd.Kind == KindPrompt) && !ctl.IsIdle() {
+	if requiresIdle(cmd.Kind) && !ctl.IsIdle() {
 		ctl.Show(MessageHelp, "Please wait for the current task to finish before running this command.\n"+FormatHelpHint())
 		return result
 	}
 	ctx := Context{Input: parsed.Input, Name: cmd.Name, Args: parsed.Args, Command: cmd}
 	result.Err = cmd.Handler(ctx, ctl)
 	return result
+}
+
+func requiresIdle(kind Kind) bool {
+	return kind == KindUI || kind == KindPrompt || kind == KindSkill
 }
