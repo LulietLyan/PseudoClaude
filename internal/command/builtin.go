@@ -1,6 +1,6 @@
 package command
 
-const ReviewPrompt = "Review the current code changes. Prioritize bugs, behavioral regressions, security issues, and missing tests. Present findings first, ordered by severity with file and line references when possible."
+import "strings"
 
 func Builtins() []Command {
 	return []Command{
@@ -34,6 +34,7 @@ func Builtins() []Command {
 			Kind:        KindUI,
 			Handler: func(ctx Context, ctl Controller) error {
 				ctl.ClearScreen()
+				ctl.ClearActiveSkills()
 				ctl.Show(MessageInfo, "Screen cleared. Conversation context is preserved.")
 				return nil
 			},
@@ -98,6 +99,21 @@ func Builtins() []Command {
 			},
 		},
 		{
+			Name:        "/skill",
+			Aliases:     []string{"/skills"},
+			Description: "List available skills.",
+			Usage:       "/skill [reload]",
+			Kind:        KindLocal,
+			ArgHint:     "[reload]",
+			Handler: func(ctx Context, ctl Controller) error {
+				if strings.EqualFold(strings.TrimSpace(ctx.Args), "reload") {
+					ctl.ReloadSkills()
+				}
+				ctl.Show(MessageInfo, FormatSkills(ctl.ListSkills()))
+				return nil
+			},
+		},
+		{
 			Name:        "/status",
 			Aliases:     []string{"/st"},
 			Description: "Show runtime status.",
@@ -105,17 +121,6 @@ func Builtins() []Command {
 			Kind:        KindLocal,
 			Handler: func(ctx Context, ctl Controller) error {
 				ctl.Show(MessageInfo, FormatStatus(ctl.Status()))
-				return nil
-			},
-		},
-		{
-			Name:        "/review",
-			Aliases:     []string{"/rev"},
-			Description: "Start a code review request.",
-			Usage:       "/review",
-			Kind:        KindPrompt,
-			Handler: func(ctx Context, ctl Controller) error {
-				ctl.SendPresetUserMessage("/review", ReviewPrompt)
 				return nil
 			},
 		},

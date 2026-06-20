@@ -38,6 +38,24 @@ func TestRegistryLookupVisibleAndComplete(t *testing.T) {
 	}
 }
 
+func TestRegistryDynamicRegisterRemoveAndHas(t *testing.T) {
+	reg := MustNewRegistry([]Command{{Name: "/help", Handler: noop}})
+	if err := reg.Register(Command{Name: "/demo", Kind: KindSkill, Skill: true, Handler: noop}); err != nil {
+		t.Fatal(err)
+	}
+	if !reg.Has("/demo") {
+		t.Fatal("missing dynamic command")
+	}
+	items := reg.Complete("/d")
+	if len(items) != 1 || !items[0].Skill || items[0].Kind != KindSkill {
+		t.Fatalf("items = %+v", items)
+	}
+	RemoveSkillCommands(reg)
+	if reg.Has("/demo") {
+		t.Fatal("skill command not removed")
+	}
+}
+
 func TestRegistryConflicts(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -73,7 +91,7 @@ func TestRegistryConflicts(t *testing.T) {
 func TestBuiltins(t *testing.T) {
 	reg := NewBuiltinRegistry()
 	visible := reg.Visible()
-	want := []string{"/clear", "/compact", "/do", "/help", "/memory", "/permission", "/plan", "/review", "/session", "/status"}
+	want := []string{"/clear", "/compact", "/do", "/help", "/memory", "/permission", "/plan", "/session", "/skill", "/status"}
 	if len(visible) != len(want) {
 		t.Fatalf("visible count = %d", len(visible))
 	}
@@ -86,7 +104,7 @@ func TestBuiltins(t *testing.T) {
 	for _, cmd := range visible {
 		kinds[cmd.Name] = cmd.Kind
 	}
-	for _, name := range []string{"/help", "/memory", "/permission", "/session", "/status"} {
+	for _, name := range []string{"/help", "/memory", "/permission", "/session", "/skill", "/status"} {
 		if kinds[name] != KindLocal {
 			t.Fatalf("%s kind = %v", name, kinds[name])
 		}
@@ -95,8 +113,5 @@ func TestBuiltins(t *testing.T) {
 		if kinds[name] != KindUI {
 			t.Fatalf("%s kind = %v", name, kinds[name])
 		}
-	}
-	if kinds["/review"] != KindPrompt {
-		t.Fatalf("/review kind = %v", kinds["/review"])
 	}
 }

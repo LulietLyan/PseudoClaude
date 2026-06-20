@@ -16,6 +16,8 @@ type Completion struct {
 	Name        string
 	Alias       string
 	Description string
+	Kind        Kind
+	Skill       bool
 }
 
 func NewRegistry(commands []Command) (*Registry, error) {
@@ -76,6 +78,65 @@ func (r *Registry) Lookup(token string) (*Command, bool) {
 	return &cmd, true
 }
 
+func (r *Registry) Register(cmd Command) error {
+	if cmd.Handler == nil {
+		return fmt.Errorf("invalid command %s: handler is nil", cmd.Name)
+	}
+	name, err := normalizeName(cmd.Name)
+	if err != nil {
+		return fmt.Errorf("invalid command %q: %w", cmd.Name, err)
+	}
+	cmd.Name = name
+	seen := map[string]struct{}{}
+	index := len(r.entries)
+	if r.index == nil {
+		r.index = make(map[string]int)
+	}
+	if err := r.addIndex(name, index, seen); err != nil {
+		return err
+	}
+	for i, alias := range cmd.Aliases {
+		normalized, err := normalizeName(alias)
+		if err != nil {
+			delete(r.index, name)
+			return fmt.Errorf("invalid alias %q for %s: %w", alias, cmd.Name, err)
+		}
+		cmd.Aliases[i] = normalized
+		if err := r.addIndex(normalized, index, seen); err != nil {
+			delete(r.index, name)
+			return err
+		}
+	}
+	r.entries = append(r.entries, cmd)
+	return nil
+}
+
+func (r *Registry) RemoveWhere(match func(Command) bool) {
+	if r == nil || match == nil {
+		return
+	}
+	next := make([]Command, 0, len(r.entries))
+	for _, cmd := range r.entries {
+		if !match(copyCommand(cmd)) {
+			next = append(next, cmd)
+		}
+	}
+	r.entries = next
+	r.index = make(map[string]int)
+	for i := range r.entries {
+		seen := map[string]struct{}{}
+		_ = r.addIndex(r.entries[i].Name, i, seen)
+		for _, alias := range r.entries[i].Aliases {
+			_ = r.addIndex(alias, i, seen)
+		}
+	}
+}
+
+func (r *Registry) Has(token string) bool {
+	_, ok := r.Lookup(token)
+	return ok
+}
+
 func (r *Registry) Visible() []Command {
 	if r == nil {
 		return nil
@@ -102,12 +163,12 @@ func (r *Registry) Complete(prefix string) []Completion {
 	byName := map[string]Completion{}
 	for _, cmd := range r.Visible() {
 		if strings.HasPrefix(cmd.Name, normalized) {
-			byName[cmd.Name] = Completion{Text: cmd.Name, Name: cmd.Name, Description: cmd.Description}
+			byName[cmd.Name] = Completion{Text: cmd.Name, Name: cmd.Name, Description: cmd.Description, Kind: cmd.Kind, Skill: cmd.Skill}
 		}
 		for _, alias := range cmd.Aliases {
 			if strings.HasPrefix(alias, normalized) {
 				if _, exists := byName[cmd.Name]; !exists {
-					byName[cmd.Name] = Completion{Text: cmd.Name, Name: cmd.Name, Alias: alias, Description: cmd.Description}
+					byName[cmd.Name] = Completion{Text: cmd.Name, Name: cmd.Name, Alias: alias, Description: cmd.Description, Kind: cmd.Kind, Skill: cmd.Skill}
 				}
 			}
 		}

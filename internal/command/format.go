@@ -18,8 +18,24 @@ func FormatHelp(commands []Command) string {
 	lines := []string{"Available commands:", ""}
 	lines = append(lines, fmt.Sprintf("  %-*s  %-12s  %s", maxName, "Command", "Usage", "Description"))
 	for _, cmd := range commands {
-		lines = append(lines, fmt.Sprintf("  %-*s  %-12s  %s", maxName, cmd.Name, cmd.Usage, cmd.Description))
+		description := cmd.Description
+		if cmd.Skill {
+			description += " [skill]"
+		}
+		lines = append(lines, fmt.Sprintf("  %-*s  %-12s  %s", maxName, cmd.Name, cmd.Usage, description))
 	}
+	return strings.Join(lines, "\n")
+}
+
+func FormatSkills(skills []SkillSummary) string {
+	if len(skills) == 0 {
+		return "No skills loaded."
+	}
+	lines := []string{fmt.Sprintf("Available skills (%d):", len(skills)), ""}
+	for _, skill := range skills {
+		lines = append(lines, fmt.Sprintf("  /%s  %s", skill.Name, skill.Description))
+	}
+	lines = append(lines, "", "Run /<skill-name> [arguments] to invoke a skill.")
 	return strings.Join(lines, "\n")
 }
 

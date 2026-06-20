@@ -12,6 +12,8 @@ type fakeController struct {
 	messageKind []MessageKind
 	workMode    WorkMode
 	preset      string
+	runSkill    string
+	clearSkills bool
 	compact     bool
 	clear       bool
 }
@@ -36,6 +38,13 @@ func (f *fakeController) TriggerCompact()                        { f.compact = t
 func (f *fakeController) ClearScreen()                           { f.clear = true }
 func (f *fakeController) SendPresetUserMessage(_, prompt string) { f.preset = prompt }
 func (f *fakeController) RefreshStatus()                         {}
+func (f *fakeController) ListSkills() []SkillSummary             { return nil }
+func (f *fakeController) RunSkill(name, args string) error {
+	f.runSkill = name + ":" + args
+	return nil
+}
+func (f *fakeController) ReloadSkills()      {}
+func (f *fakeController) ClearActiveSkills() { f.clearSkills = true }
 
 func TestDispatch(t *testing.T) {
 	reg := NewBuiltinRegistry()
@@ -109,5 +118,18 @@ func TestDispatchHiddenSkillCommand(t *testing.T) {
 	got = Dispatch(reg, "/skill:review", ctl)
 	if !got.Handled || got.Kind != KindSkill || called || len(ctl.messages) == 0 || !strings.Contains(ctl.messages[0], "wait") {
 		t.Fatalf("non-idle skill dispatch result=%+v called=%v messages=%+v", got, called, ctl.messages)
+	}
+}
+
+func TestDispatchRegisteredSkillCommand(t *testing.T) {
+	reg := NewBuiltinRegistry()
+	errs := RegisterSkillCommands(reg, []SkillSummary{{Name: "demo", Description: "Demo skill."}})
+	if len(errs) != 0 {
+		t.Fatalf("errs = %+v", errs)
+	}
+	ctl := &fakeController{idle: true}
+	got := Dispatch(reg, "/demo hello", ctl)
+	if !got.Handled || got.Kind != KindSkill || ctl.runSkill != "demo:hello" {
+		t.Fatalf("got=%+v ctl=%+v", got, ctl)
 	}
 }

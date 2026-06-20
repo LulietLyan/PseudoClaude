@@ -32,6 +32,7 @@ type Command struct {
 	Kind        Kind
 	ArgHint     string
 	Hidden      bool
+	Skill       bool
 	Handler     Handler
 }
 
@@ -82,4 +83,15 @@ type Controller interface {
 	ClearScreen()
 	SendPresetUserMessage(displayLabel, prompt string)
 	RefreshStatus()
+	ListSkills() []SkillSummary
+	RunSkill(name, args string) error
+	ReloadSkills()
+	ClearActiveSkills()
+}
+
+type SkillSummary struct {
+	Name        string
+	Description string
+	Source      string
+	Mode        string
 }

@@ -29,4 +29,11 @@ func TestFormat(t *testing.T) {
 	if got := FormatMemory("hello"); !strings.Contains(got, "Agent Memory") || !strings.Contains(got, "hello") {
 		t.Fatalf("memory = %q", got)
 	}
+	if got := FormatSkills(nil); got != "No skills loaded." {
+		t.Fatalf("skills empty = %q", got)
+	}
+	skills := FormatSkills([]SkillSummary{{Name: "demo", Description: "Demo."}})
+	if !strings.Contains(skills, "Available skills (1):") || !strings.Contains(skills, "/demo") {
+		t.Fatalf("skills = %q", skills)
+	}
 }
