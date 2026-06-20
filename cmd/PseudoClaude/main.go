@@ -13,6 +13,7 @@ import (
 	"PseudoClaude/internal/memory"
 	"PseudoClaude/internal/permission"
 	"PseudoClaude/internal/session"
+	"PseudoClaude/internal/skills"
 	"PseudoClaude/internal/tools"
 	"PseudoClaude/internal/tui"
 )
@@ -55,6 +56,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "工具注册错误: %v\n", err)
 		os.Exit(1)
 	}
+	activeSkills := skills.NewActiveSkills()
+	skillCatalog := skills.LoadCatalog(skills.LoadOptions{WorkDir: cwd, HomeDir: home})
+	if err := registry.Register(tools.NewLoadSkillTool(skillCatalog, activeSkills, registry)); err != nil {
+		fmt.Fprintf(os.Stderr, "Skill 工具注册错误: %v\n", err)
+		os.Exit(1)
+	}
 
 	mcpCfg, loadIssues := mcp.LoadConfig(cwd)
 	for _, issue := range loadIssues {
@@ -75,6 +82,22 @@ func main() {
 		}
 		mcpStats.Registered++
 	}
+	userSkillDir := filepath.Join(home, ".PseudoClaude", "skills")
+	if err := registry.Register(tools.NewInstallSkillTool(userSkillDir, func() skills.ReloadResult {
+		return skillCatalog.Reload(skills.LoadOptions{WorkDir: cwd, HomeDir: home})
+	})); err != nil {
+		fmt.Fprintf(os.Stderr, "Skill 安装工具注册错误: %v\n", err)
+		os.Exit(1)
+	}
+	for _, warning := range skillCatalog.Warnings() {
+		printSkillWarning(warning)
+	}
+	for _, warning := range skillCatalog.ValidateTools(registry, map[string]bool{"load_skill": true}) {
+		printSkillWarning(warning)
+		if warning.Skill != "" {
+			skillCatalog.Remove(warning.Skill)
+		}
+	}
 	mcpStatus := fmt.Sprintf("MCP: %d/%d connected, %d registered",
 		mcpStats.Connected, mcpStats.Configured, mcpStats.Registered)
 
@@ -89,12 +112,25 @@ func main() {
 	if filepath.IsAbs(memory.DefaultProjectDir(cwd)) {
 		startup = append(startup, "Memory: index loaded")
 	}
+	startup = append(startup, fmt.Sprintf("Skills: %d loaded", len(skillCatalog.List())))
 	model := tui.New(cfg.Providers, cwd, registry, permissionEngine).
+		WithSkills(skillCatalog, activeSkills).
 		WithPersistentContext(instructionResult.Content, memoryManager).
 		WithStartupStatus(startup...)
 	if err := model.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "运行错误: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func printSkillWarning(warning skills.Warning) {
+	switch {
+	case warning.Path != "" && warning.Skill != "":
+		fmt.Fprintf(os.Stderr, "Skill 提示: %s: %s: %s\n", warning.Path, warning.Skill, warning.Reason)
+	case warning.Path != "":
+		fmt.Fprintf(os.Stderr, "Skill 提示: %s: %s\n", warning.Path, warning.Reason)
+	default:
+		fmt.Fprintf(os.Stderr, "Skill 提示: %s\n", warning.Reason)
 	}
 }
 

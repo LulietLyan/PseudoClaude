@@ -7,6 +7,7 @@ import (
 	"PseudoClaude/internal/command"
 	"PseudoClaude/internal/config"
 	"PseudoClaude/internal/llm"
+	"PseudoClaude/internal/skills"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -92,23 +93,55 @@ func TestCommandClearKeepsConversation(t *testing.T) {
 	}
 }
 
-func TestReviewCommandSubmitsPresetPrompt(t *testing.T) {
-	model := New([]config.ProviderConfig{}, t.TempDir(), nil)
+func TestReviewSkillCommandRunsIsolated(t *testing.T) {
+	work := t.TempDir()
+	catalog := skills.LoadCatalog(skills.LoadOptions{WorkDir: work, HomeDir: t.TempDir()})
+	model := New([]config.ProviderConfig{}, work, nil).WithSkills(catalog, skills.NewActiveSkills())
 	model.provider = fakeProvider{events: []llm.StreamEvent{{Text: "reviewed"}, {Done: true}}}
 	model.runner.Provider = model.provider
 
-	model.textarea.SetValue("/rev")
+	model.textarea.SetValue("/review")
 	next, cmd := model.updateIdle(tea.KeyPressMsg{Code: tea.KeyEnter})
 	model = next.(Model)
 	if cmd == nil || model.state != stateStreaming {
-		t.Fatalf("review did not start stream state=%v cmd=%v", model.state, cmd)
+		t.Fatalf("review skill should start streaming state=%v cmd=%v", model.state, cmd)
+	}
+	for model.state == stateStreaming {
+		msg := waitForAgentEvent(model.events)()
+		next, cmd = model.updateStreaming(msg)
+		model = next.(Model)
+		if cmd == nil && model.state == stateStreaming {
+			t.Fatal("streaming without next command")
+		}
 	}
 	msgs := model.conv.Messages()
-	if len(msgs) != 1 || msgs[0].Content != command.ReviewPrompt {
+	if len(msgs) < 2 || msgs[len(msgs)-1].Content != "reviewed" {
 		t.Fatalf("conversation messages = %+v", msgs)
 	}
-	if len(model.transcript) == 0 || model.transcript[len(model.transcript)-1].text != "/review" {
+	if len(model.transcript) == 0 || model.transcript[len(model.transcript)-1].text != "reviewed" {
 		t.Fatalf("review transcript = %+v", model.transcript)
+	}
+}
+
+func TestSkillCommandListsBuiltinSkills(t *testing.T) {
+	work := t.TempDir()
+	catalog := skills.LoadCatalog(skills.LoadOptions{WorkDir: work, HomeDir: t.TempDir()})
+	model := New([]config.ProviderConfig{}, work, nil).WithSkills(catalog, skills.NewActiveSkills())
+
+	model.textarea.SetValue("/skill")
+	next, cmd := model.updateIdle(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(Model)
+	if cmd != nil {
+		t.Fatal("unexpected command")
+	}
+	if len(model.transcript) == 0 {
+		t.Fatal("missing transcript")
+	}
+	text := model.transcript[len(model.transcript)-1].text
+	for _, want := range []string{"/commit", "/review", "/test"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("/skill output missing %s: %q", want, text)
+		}
 	}
 }
 

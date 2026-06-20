@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"PseudoClaude/internal/command"
+
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -43,7 +45,9 @@ func TestCompletionMenuNavigationAndSync(t *testing.T) {
 	model = next
 	next, _, _ = model.handleCompletionKey(tea.KeyPressMsg{Code: tea.KeyDown})
 	model = next
-	if model.completion.cursor != 1 {
+	next, _, _ = model.handleCompletionKey(tea.KeyPressMsg{Code: tea.KeyDown})
+	model = next
+	if model.completion.cursor != 2 {
 		t.Fatalf("cursor = %d", model.completion.cursor)
 	}
 	next, _, _ = model.handleCompletionKey(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -88,7 +92,7 @@ func TestCompletionAutoSuggestsWhileTypingSlashCommands(t *testing.T) {
 		t.Fatalf("prefix should keep auto suggestions: %+v", model.completion)
 	}
 	view = stripANSI(model.completionView(80))
-	if !strings.Contains(view, "/session") || !strings.Contains(view, "/status") || strings.Contains(view, "/help") {
+	if !strings.Contains(view, "/session") || !strings.Contains(view, "/skill") || !strings.Contains(view, "/status") || strings.Contains(view, "/help") {
 		t.Fatalf("prefix suggestions = %q", view)
 	}
 
@@ -96,5 +100,37 @@ func TestCompletionAutoSuggestsWhileTypingSlashCommands(t *testing.T) {
 	model = next
 	if ok || model.textarea.Value() != "/s" {
 		t.Fatalf("auto suggestions should not consume enter: ok=%v value=%q", ok, model.textarea.Value())
+	}
+}
+
+func TestCompletionShowsSkillMarker(t *testing.T) {
+	model := New(nil, t.TempDir(), nil)
+	errs := command.RegisterSkillCommands(model.commandRegistry, []command.SkillSummary{{Name: "demo", Description: "Demo skill."}})
+	if len(errs) != 0 {
+		t.Fatalf("errs = %+v", errs)
+	}
+	model.textarea.SetValue("/d")
+	model = model.updateCompletionFromInput()
+	view := stripANSI(model.completionView(80))
+	if !strings.Contains(view, "/demo") || !strings.Contains(view, "[skill]") {
+		t.Fatalf("view = %q", view)
+	}
+}
+
+func TestCompletionKeepsSkillNameWhenDescriptionIsLong(t *testing.T) {
+	item := command.Completion{
+		Name:        "/very-long-skill-name",
+		Description: strings.Repeat("long description ", 12),
+		Skill:       true,
+	}
+	line := completionLine(item, 42)
+	if !strings.HasPrefix(line, "/very-long-skill-name [skill]  ") {
+		t.Fatalf("skill label should remain at the front: %q", line)
+	}
+	if !strings.HasSuffix(line, "...") {
+		t.Fatalf("description should be truncated at the end: %q", line)
+	}
+	if strings.HasPrefix(line, "...") {
+		t.Fatalf("line should not truncate from the front: %q", line)
 	}
 }

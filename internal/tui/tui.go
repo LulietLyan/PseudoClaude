@@ -15,6 +15,7 @@ import (
 	"PseudoClaude/internal/memory"
 	"PseudoClaude/internal/permission"
 	"PseudoClaude/internal/session"
+	"PseudoClaude/internal/skills"
 	"PseudoClaude/internal/tools"
 
 	"charm.land/bubbles/v2/key"
@@ -81,9 +82,27 @@ type Model struct {
 	startupStatus    []string
 	registry         *tools.Registry
 	commandRegistry  *command.Registry
+	skillCatalog     *skills.Catalog
+	activeSkills     *skills.ActiveSkills
+	skillExecutor    skills.Executor
 	completion       completionState
 	toolEnv          tools.Env
 	stickToBottom    bool
+}
+
+func (m Model) WithSkills(catalog *skills.Catalog, active *skills.ActiveSkills) Model {
+	m.skillCatalog = catalog
+	if active == nil {
+		active = skills.NewActiveSkills()
+	}
+	m.activeSkills = active
+	m.runner.SkillsCatalog = m.promptSkillCatalog
+	m.runner.ActiveSkills = m.promptActiveSkills
+	m.skillExecutor = skills.Executor{Catalog: catalog, Active: active, Runner: &skillRunnerAdapter{model: &m}}
+	if catalog != nil {
+		_ = command.RegisterSkillCommands(m.commandRegistry, skillSummaries(catalog.Summaries()))
+	}
+	return m
 }
 
 type toolStatus struct {

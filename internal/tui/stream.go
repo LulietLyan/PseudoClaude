@@ -110,6 +110,10 @@ func (m Model) submitPresetText(displayLabel, prompt string) (tea.Model, tea.Cmd
 }
 
 func (m Model) submitAgentText(text, printableOverride string) (tea.Model, tea.Cmd) {
+	return m.submitAgentTextWithTools(text, printableOverride, nil)
+}
+
+func (m Model) submitAgentTextWithTools(text, printableOverride string, allowedTools []string) (tea.Model, tea.Cmd) {
 	if m.provider == nil {
 		m.appendTranscript(transcriptEntry{kind: transcriptError, text: "provider 尚未初始化"})
 		return m, nil
@@ -132,6 +136,7 @@ func (m Model) submitAgentText(text, printableOverride string) (tea.Model, tea.C
 	m.runner.Compact = m.compactRuntime
 	m.runner.Instructions = m.instructions
 	m.runner.Memory = m.memory
+	m.runner.AllowedTools = append([]string(nil), allowedTools...)
 	m.events = m.runner.Run(ctx, req)
 	m.turnStart = time.Now()
 	m.elapsed = 0
@@ -227,6 +232,10 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 				m.curTool.result = &result
 			}
 			m.appendTranscript(transcriptEntry{kind: transcriptTool, result: result, elapsed: event.ToolResult.Elapsed})
+			if result.OK && result.Tool == "install_skill" {
+				m.reloadSkills()
+				m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "Skills reloaded."})
+			}
 			return m, waitForAgentEvent(m.events)
 		}
 		return m, waitForAgentEvent(m.events)

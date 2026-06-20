@@ -16,6 +16,7 @@ import (
 	"PseudoClaude/internal/memory"
 	"PseudoClaude/internal/permission"
 	"PseudoClaude/internal/session"
+	"PseudoClaude/internal/skills"
 	"PseudoClaude/internal/tools"
 
 	tea "charm.land/bubbletea/v2"
@@ -188,6 +189,35 @@ func TestStreamingTextDeltasDoNotPanicAfterModelCopies(t *testing.T) {
 
 	if model.curReply != "hello" {
 		t.Fatalf("curReply = %q, want hello", model.curReply)
+	}
+}
+
+func TestInstallSkillToolResultRefreshesSkillCommands(t *testing.T) {
+	work := t.TempDir()
+	catalog := skills.LoadCatalog(skills.LoadOptions{WorkDir: work, HomeDir: t.TempDir()})
+	model := New([]config.ProviderConfig{}, work, nil).WithSkills(catalog, skills.NewActiveSkills())
+	if items := model.commandRegistry.Complete("/demo"); len(items) != 0 {
+		t.Fatalf("demo should not exist yet: %+v", items)
+	}
+	dir := filepath.Join(work, ".PseudoClaude", "skills", "demo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: demo\ndescription: Demo skill.\n---\nBody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	model.events = make(chan agent.Event)
+	model.turnStart = time.Now()
+	next, _ := model.handleAgentEvent(agent.Event{
+		Type: agent.EventToolResult,
+		ToolResult: &agent.ToolResult{
+			Result: tools.Success("install_skill", "installed", nil),
+		},
+	})
+	model = next.(Model)
+	items := model.commandRegistry.Complete("/demo")
+	if len(items) != 1 || items[0].Name != "/demo" || !items[0].Skill {
+		t.Fatalf("demo completion = %+v", items)
 	}
 }
 

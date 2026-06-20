@@ -125,11 +125,7 @@ func (m Model) completionView(width int) string {
 	lines := make([]string, 0, end-start)
 	for i := start; i < end; i++ {
 		item := m.completion.items[i]
-		line := item.Name
-		if item.Description != "" {
-			line += "  " + item.Description
-		}
-		line = fitLine(line, max(1, width-6))
+		line := completionLine(item, max(1, width-6))
 		if i == m.completion.cursor {
 			prefix := "  "
 			if m.completion.manual {
@@ -142,6 +138,49 @@ func (m Model) completionView(width int) string {
 		lines = append(lines, line)
 	}
 	return completionStyle.Width(width).Render(strings.Join(lines, "\n"))
+}
+
+func completionLine(item command.Completion, width int) string {
+	label := item.Name
+	if item.Skill {
+		label += " [skill]"
+	}
+	label = strings.TrimSpace(label)
+	description := strings.TrimSpace(item.Description)
+	if description == "" {
+		return fitLineEnd(label, width)
+	}
+	separator := "  "
+	labelWidth := lipgloss.Width(label)
+	remaining := width - labelWidth - lipgloss.Width(separator)
+	if remaining <= 0 {
+		return fitLineEnd(label, width)
+	}
+	return label + separator + fitLineEnd(description, remaining)
+}
+
+func fitLineEnd(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+	ellipsis := "..."
+	ellipsisWidth := lipgloss.Width(ellipsis)
+	if width <= ellipsisWidth {
+		return ellipsis[:width]
+	}
+	available := width - ellipsisWidth
+	var out []rune
+	for _, r := range []rune(s) {
+		candidate := string(append(out, r))
+		if lipgloss.Width(candidate) > available {
+			break
+		}
+		out = append(out, r)
+	}
+	return string(out) + ellipsis
 }
 
 func isCompletableInput(value string) bool {

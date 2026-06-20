@@ -130,6 +130,35 @@ func (a *commandAdapter) RefreshStatus() {
 	a.model.updateViewportContent()
 }
 
+func (a *commandAdapter) ListSkills() []command.SkillSummary {
+	if a == nil || a.model == nil || a.model.skillCatalog == nil {
+		return nil
+	}
+	return skillSummaries(a.model.skillCatalog.Summaries())
+}
+
+func (a *commandAdapter) RunSkill(name, args string) error {
+	if a == nil || a.model == nil {
+		return nil
+	}
+	a.model.skillExecutor.Runner = &skillRunnerAdapter{model: a.model, cmds: &a.cmds}
+	return a.model.skillExecutor.Execute(name, args)
+}
+
+func (a *commandAdapter) ReloadSkills() {
+	if a == nil || a.model == nil {
+		return
+	}
+	a.model.reloadSkills()
+}
+
+func (a *commandAdapter) ClearActiveSkills() {
+	if a == nil || a.model == nil || a.model.activeSkills == nil {
+		return
+	}
+	a.model.activeSkills.Clear()
+}
+
 func providerModel(m *Model) string {
 	if m == nil || m.provider == nil {
 		return ""
