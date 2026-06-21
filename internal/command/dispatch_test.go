@@ -39,6 +39,8 @@ func (f *fakeController) ClearScreen()                           { f.clear = tru
 func (f *fakeController) SendPresetUserMessage(_, prompt string) { f.preset = prompt }
 func (f *fakeController) RefreshStatus()                         {}
 func (f *fakeController) ListSkills() []SkillSummary             { return nil }
+func (f *fakeController) ListHooks() []HookSummary               { return nil }
+func (f *fakeController) HookSources() []string                  { return nil }
 func (f *fakeController) RunSkill(name, args string) error {
 	f.runSkill = name + ":" + args
 	return nil

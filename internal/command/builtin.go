@@ -114,6 +114,16 @@ func Builtins() []Command {
 			},
 		},
 		{
+			Name:        "/hooks",
+			Description: "List loaded lifecycle hooks.",
+			Usage:       "/hooks",
+			Kind:        KindLocal,
+			Handler: func(ctx Context, ctl Controller) error {
+				ctl.Show(MessageInfo, FormatHooks(ctl.ListHooks(), ctl.HookSources()))
+				return nil
+			},
+		},
+		{
 			Name:        "/status",
 			Aliases:     []string{"/st"},
 			Description: "Show runtime status.",

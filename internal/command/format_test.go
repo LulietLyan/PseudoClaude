@@ -36,4 +36,16 @@ func TestFormat(t *testing.T) {
 	if !strings.Contains(skills, "Available skills (1):") || !strings.Contains(skills, "/demo") {
 		t.Fatalf("skills = %q", skills)
 	}
+	if got := FormatHooks(nil, nil); got != "No hooks loaded." {
+		t.Fatalf("hooks empty = %q", got)
+	}
+	hooks := FormatHooks([]HookSummary{
+		{Name: "a", Event: "PreToolUse", Action: "shell", Flags: []string{"only_once"}, Source: "project"},
+		{Name: "b", Event: "Stop", Action: "http", Flags: []string{"async", "timeout=5s"}, Source: "user"},
+	}, []string{"user", "project"})
+	for _, want := range []string{"Loaded hooks (2):", "PreToolUse:", "a  shell [only_once]  project", "Stop:", "b  http [async, timeout=5s]  user", "Loaded from:"} {
+		if !strings.Contains(hooks, want) {
+			t.Fatalf("hooks missing %q: %q", want, hooks)
+		}
+	}
 }

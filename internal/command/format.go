@@ -39,6 +39,36 @@ func FormatSkills(skills []SkillSummary) string {
 	return strings.Join(lines, "\n")
 }
 
+func FormatHooks(hooks []HookSummary, sources []string) string {
+	if len(hooks) == 0 {
+		return "No hooks loaded."
+	}
+	lines := []string{fmt.Sprintf("Loaded hooks (%d):", len(hooks)), ""}
+	currentEvent := ""
+	for _, hook := range hooks {
+		if hook.Event != currentEvent {
+			if currentEvent != "" {
+				lines = append(lines, "")
+			}
+			currentEvent = hook.Event
+			lines = append(lines, currentEvent+":")
+		}
+		flags := ""
+		if len(hook.Flags) > 0 {
+			flags = " [" + strings.Join(hook.Flags, ", ") + "]"
+		}
+		source := valueOrEmpty(hook.Source)
+		lines = append(lines, fmt.Sprintf("  %s  %s%s  %s", hook.Name, hook.Action, flags, source))
+	}
+	if len(sources) > 0 {
+		lines = append(lines, "", "Loaded from:")
+		for _, source := range sources {
+			lines = append(lines, "  "+source)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 func FormatHelpHint() string {
 	return "Need help? Type /help to view available commands, usage, and descriptions."
 }

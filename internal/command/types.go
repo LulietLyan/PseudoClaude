@@ -84,6 +84,8 @@ type Controller interface {
 	SendPresetUserMessage(displayLabel, prompt string)
 	RefreshStatus()
 	ListSkills() []SkillSummary
+	ListHooks() []HookSummary
+	HookSources() []string
 	RunSkill(name, args string) error
 	ReloadSkills()
 	ClearActiveSkills()
@@ -94,4 +96,12 @@ type SkillSummary struct {
 	Description string
 	Source      string
 	Mode        string
+}
+
+type HookSummary struct {
+	Name   string
+	Event  string
+	Action string
+	Flags  []string
+	Source string
 }
