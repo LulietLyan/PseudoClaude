@@ -29,7 +29,7 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 type sessionState int
 
