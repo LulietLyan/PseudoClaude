@@ -3,9 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
+	"PseudoClaude/internal/hook"
 	"PseudoClaude/internal/llm"
 	"PseudoClaude/internal/permission"
 	"PseudoClaude/internal/tools"
@@ -19,6 +22,13 @@ type toolBatch struct {
 type toolExecutionOptions struct {
 	AllowedSafety map[tools.Safety]bool
 	AllowedNames  map[string]bool
+}
+
+type toolHookContext struct {
+	Engine    *hook.Engine
+	SessionID string
+	CWD       string
+	Mode      permission.Mode
 }
 
 type indexedToolCall struct {
@@ -54,7 +64,7 @@ func splitToolBatches(registry *tools.Registry, calls []llm.ToolCall, opts toolE
 	return batches
 }
 
-func executeToolCalls(ctx context.Context, registry *tools.Registry, env tools.Env, iteration int, calls []llm.ToolCall, events chan<- Event, opts toolExecutionOptions, engine *permission.Engine, mode permission.Mode) ([]ToolResult, error) {
+func executeToolCalls(ctx context.Context, registry *tools.Registry, env tools.Env, iteration int, calls []llm.ToolCall, events chan<- Event, opts toolExecutionOptions, engine *permission.Engine, mode permission.Mode, hooks toolHookContext) ([]ToolResult, error) {
 	if registry == nil {
 		registry, _ = tools.NewRegistry()
 	}
@@ -77,7 +87,7 @@ func executeToolCalls(ctx context.Context, registry *tools.Registry, env tools.E
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					result := executeOneTool(ctx, registry, env, iteration, item.call, events, opts, engine, mode)
+					result := executeOneTool(ctx, registry, env, iteration, item.call, events, opts, engine, mode, hooks)
 					mu.Lock()
 					results[item.index] = result
 					filled[item.index] = true
@@ -90,7 +100,7 @@ func executeToolCalls(ctx context.Context, registry *tools.Registry, env tools.E
 				if ctx.Err() != nil {
 					return orderedResults(results, filled), ctx.Err()
 				}
-				result := executeOneTool(ctx, registry, env, iteration, item.call, events, opts, engine, mode)
+				result := executeOneTool(ctx, registry, env, iteration, item.call, events, opts, engine, mode, hooks)
 				results[item.index] = result
 				filled[item.index] = true
 			}
@@ -100,17 +110,21 @@ func executeToolCalls(ctx context.Context, registry *tools.Registry, env tools.E
 	return orderedResults(results, filled), ctx.Err()
 }
 
-func executeOneTool(ctx context.Context, registry *tools.Registry, env tools.Env, iteration int, call llm.ToolCall, events chan<- Event, opts toolExecutionOptions, engine *permission.Engine, mode permission.Mode) ToolResult {
+func executeOneTool(ctx context.Context, registry *tools.Registry, env tools.Env, iteration int, call llm.ToolCall, events chan<- Event, opts toolExecutionOptions, engine *permission.Engine, mode permission.Mode, hooks toolHookContext) ToolResult {
 	started := time.Now()
 	sendEvent(ctx, events, Event{Type: EventToolCallStart, Iteration: iteration, ToolCall: &call})
-	result := permissionCheckedTool(ctx, registry, env, iteration, call, events, opts, engine, mode)
+	result := dispatchPreToolHook(ctx, call, hooks)
+	if result.Tool == "" {
+		result = permissionCheckedTool(ctx, registry, env, iteration, call, events, opts, engine, mode, hooks)
+	}
+	dispatchPostToolHook(ctx, call, result, hooks)
 	out := ToolResult{Call: call, Result: result, Elapsed: time.Since(started)}
 	sendEvent(ctx, events, Event{Type: EventToolResult, Iteration: iteration, ToolResult: &out})
 	sendEvent(ctx, events, Event{Type: EventToolCallDone, Iteration: iteration, ToolCall: &call, ToolResult: &out})
 	return out
 }
 
-func permissionCheckedTool(ctx context.Context, registry *tools.Registry, env tools.Env, iteration int, call llm.ToolCall, events chan<- Event, opts toolExecutionOptions, engine *permission.Engine, mode permission.Mode) tools.Result {
+func permissionCheckedTool(ctx context.Context, registry *tools.Registry, env tools.Env, iteration int, call llm.ToolCall, events chan<- Event, opts toolExecutionOptions, engine *permission.Engine, mode permission.Mode, hooks toolHookContext) tools.Result {
 	if isProtectedSystemTool(registry, call.Name) {
 		return executeAllowedTool(ctx, registry, env, call, opts)
 	}
@@ -125,6 +139,7 @@ func permissionCheckedTool(ctx context.Context, registry *tools.Registry, env to
 	case permission.DecisionDeny:
 		return permissionDeniedResult(call, check)
 	case permission.DecisionAsk:
+		dispatchNotificationHook(ctx, hooks, "approval", summarizeCall(call))
 		decision, err := requestApproval(ctx, call, check, events, iteration)
 		if err != nil {
 			return tools.Failure(call.Name, "permission_canceled", err.Error(), permissionMetadata(call, check))
@@ -150,6 +165,84 @@ func permissionCheckedTool(ctx context.Context, registry *tools.Registry, env to
 	default:
 		return permissionDeniedResult(call, permission.CheckResult{Decision: permission.DecisionDeny, Source: "unknown", Reason: "permission engine returned an unknown decision"})
 	}
+}
+
+func dispatchPreToolHook(ctx context.Context, call llm.ToolCall, hooks toolHookContext) tools.Result {
+	if hooks.Engine == nil {
+		return tools.Result{}
+	}
+	payload := hook.NewPayload(hook.EventPreToolUse, hooks.SessionID, hooks.CWD, hooks.Mode).
+		With("tool_name", call.Name).
+		With("tool_input", toolInputPayload(call))
+	result := hooks.Engine.Dispatch(ctx, hook.EventPreToolUse, payload)
+	if !result.Blocked {
+		return tools.Result{}
+	}
+	reason := hookBlockMessage(result)
+	return tools.Failure(call.Name, "hook_blocked", reason, map[string]any{"call_id": call.ID, "hook": result.BlockingHookName})
+}
+
+func dispatchPostToolHook(ctx context.Context, call llm.ToolCall, result tools.Result, hooks toolHookContext) {
+	if hooks.Engine == nil {
+		return
+	}
+	payload := hook.NewPayload(hook.EventPostToolUse, hooks.SessionID, hooks.CWD, hooks.Mode).
+		With("tool_name", call.Name).
+		With("tool_input", toolInputPayload(call)).
+		With("tool_result", toolResultSummary(result)).
+		With("is_error", !result.OK)
+	hooks.Engine.Dispatch(ctx, hook.EventPostToolUse, payload)
+}
+
+func dispatchNotificationHook(ctx context.Context, hooks toolHookContext, kind, detail string) {
+	if hooks.Engine == nil {
+		return
+	}
+	payload := hook.NewPayload(hook.EventNotification, hooks.SessionID, hooks.CWD, hooks.Mode).
+		With("kind", kind).
+		With("detail", detail)
+	hooks.Engine.Dispatch(ctx, hook.EventNotification, payload)
+}
+
+func toolInputPayload(call llm.ToolCall) any {
+	if len(call.Arguments) == 0 {
+		return map[string]any{}
+	}
+	var input any
+	if err := json.Unmarshal(call.Arguments, &input); err != nil {
+		return string(call.Arguments)
+	}
+	return input
+}
+
+func toolResultSummary(result tools.Result) string {
+	if result.OK {
+		return trimSummary(result.Content)
+	}
+	if result.Error != "" {
+		return trimSummary(result.Error)
+	}
+	return trimSummary(result.JSON())
+}
+
+func trimSummary(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > 500 {
+		return value[:497] + "..."
+	}
+	return value
+}
+
+func hookBlockMessage(result hook.DispatchResult) string {
+	name := strings.TrimSpace(result.BlockingHookName)
+	reason := strings.TrimSpace(result.Reason)
+	if reason == "" {
+		reason = "blocked by hook"
+	}
+	if name == "" {
+		return "[hook] " + reason
+	}
+	return fmt.Sprintf("[hook %s] %s", name, reason)
 }
 
 func executeAllowedTool(ctx context.Context, registry *tools.Registry, env tools.Env, call llm.ToolCall, opts toolExecutionOptions) tools.Result {

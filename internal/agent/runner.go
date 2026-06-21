@@ -8,6 +8,7 @@ import (
 
 	"PseudoClaude/internal/compact"
 	"PseudoClaude/internal/conversation"
+	"PseudoClaude/internal/hook"
 	"PseudoClaude/internal/llm"
 	"PseudoClaude/internal/memory"
 	"PseudoClaude/internal/permission"
@@ -30,6 +31,10 @@ type Runner struct {
 	SkillsCatalog func() []prompt.SkillCatalogItem
 	ActiveSkills  func() []prompt.ActiveSkillEntry
 	AllowedTools  []string
+	Hooks         *hook.Engine
+	HookPrompts   *hook.PromptQueue
+	SessionID     string
+	CWD           string
 }
 
 type MemoryUpdater interface {
@@ -128,6 +133,7 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 		sendEvent(ctx, events, Event{Type: EventProgress, Iteration: iteration, Message: "requesting model"})
 
 		if r.Compact != nil {
+			r.dispatchHook(ctx, hook.EventPreCompact, permissionMode, hook.Payload{"trigger": "auto"})
 			out, err := compact.ManageContext(ctx, compact.ManageInput{
 				Conversation: req.Conversation,
 				Runtime:      r.Compact,
@@ -143,6 +149,11 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 			if out.TriggeredLayer2 {
 				sendEvent(ctx, events, Event{Type: EventProgress, Iteration: iteration, Message: fmt.Sprintf("上下文已压缩：estimated tokens %d -> %d", out.BeforeTokens, out.AfterTokens)})
 			}
+			r.dispatchHook(ctx, hook.EventPostCompact, permissionMode, hook.Payload{
+				"trigger":       "auto",
+				"before_tokens": out.BeforeTokens,
+				"after_tokens":  out.AfterTokens,
+			})
 			if err != nil {
 				sendEvent(ctx, events, Event{Type: EventError, Iteration: iteration, Err: err})
 				sendStop(ctx, events, iteration, StopStreamError, err.Error())
@@ -151,6 +162,9 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 		}
 
 		collector := &streamCollector{}
+		if result := r.dispatchHook(ctx, hook.EventPreUserMessage, permissionMode, hook.Payload{"prompt": lastUserPrompt(req.Conversation)}); len(result.InjectedPrompts) > 0 && r.HookPrompts != nil {
+			r.HookPrompts.Add(result.InjectedPrompts...)
+		}
 		environment := prompt.GatherEnvironment(r.Version, r.Provider.Name(), r.Provider.Model(), r.Env.CWD).Render()
 		if active := prompt.RenderActiveSkills(r.activeSkillEntries()); active != "" {
 			environment = strings.TrimSpace(environment) + "\n\n" + active
@@ -162,7 +176,7 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 				Stable:      stableSystem,
 				Environment: environment,
 			},
-			Reminder: reminderForMode(req.Mode, iteration),
+			Reminder: r.reminder(req.Mode, iteration),
 		}
 		out, err := collector.collect(ctx, iteration, r.Provider.Stream(ctx, modelReq), events)
 		if err != nil {
@@ -170,6 +184,7 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 				sendStop(context.Background(), events, iteration, StopCanceled, "canceled")
 				return
 			}
+			r.dispatchHook(ctx, hook.EventNotification, permissionMode, hook.Payload{"kind": "stream_error", "detail": err.Error()})
 			sendEvent(ctx, events, Event{Type: EventError, Iteration: iteration, Err: err})
 			sendStop(ctx, events, iteration, StopStreamError, err.Error())
 			return
@@ -184,6 +199,7 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 			}
 			unknownCount = 0
 			r.updateMemoryAfterRun(req.Conversation, startLen)
+			r.dispatchHook(ctx, hook.EventStop, permissionMode, hook.Payload{"iter": iteration})
 			sendStop(ctx, events, iteration, StopCompleted, "completed")
 			return
 		}
@@ -192,7 +208,13 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 		if r.Compact != nil {
 			r.Compact.UpdateUsageAnchor(out.Usage, req.Conversation.Len())
 		}
-		results, err := executeToolCalls(ctx, r.Registry, r.Env, iteration, out.ToolCalls, events, toolOpts, r.Permission, permissionMode)
+		hooks := toolHookContext{
+			Engine:    r.Hooks,
+			SessionID: r.sessionID(),
+			CWD:       r.cwd(),
+			Mode:      permissionMode,
+		}
+		results, err := executeToolCalls(ctx, r.Registry, r.Env, iteration, out.ToolCalls, events, toolOpts, r.Permission, permissionMode, hooks)
 		for _, result := range results {
 			req.Conversation.AddToolResult(llm.ToolResult{
 				CallID:  result.Call.ID,
@@ -215,6 +237,58 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 			return
 		}
 	}
+}
+
+func (r Runner) dispatchHook(ctx context.Context, event hook.Event, mode permission.Mode, extra hook.Payload) hook.DispatchResult {
+	if r.Hooks == nil {
+		return hook.DispatchResult{}
+	}
+	payload := hook.NewPayload(event, r.sessionID(), r.cwd(), mode)
+	for key, value := range extra {
+		payload[key] = value
+	}
+	return r.Hooks.Dispatch(ctx, event, payload)
+}
+
+func (r Runner) sessionID() string {
+	if r.SessionID != "" {
+		return r.SessionID
+	}
+	if r.Compact != nil {
+		return r.Compact.Snapshot().Session.ID
+	}
+	return ""
+}
+
+func (r Runner) cwd() string {
+	if r.CWD != "" {
+		return r.CWD
+	}
+	return r.Env.CWD
+}
+
+func (r Runner) reminder(mode Mode, iteration int) string {
+	parts := []string{}
+	if base := strings.TrimSpace(reminderForMode(mode, iteration)); base != "" {
+		parts = append(parts, base)
+	}
+	if r.HookPrompts != nil {
+		parts = append(parts, r.HookPrompts.Drain()...)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func lastUserPrompt(conv *conversation.Conversation) string {
+	if conv == nil {
+		return ""
+	}
+	messages := conv.Messages()
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" && messages[i].Content != "" {
+			return messages[i].Content
+		}
+	}
+	return ""
 }
 
 func (r Runner) updateMemoryAfterRun(conv *conversation.Conversation, startLen int) {

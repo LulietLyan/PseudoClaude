@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"PseudoClaude/internal/compact"
 	"PseudoClaude/internal/conversation"
+	"PseudoClaude/internal/hook"
 	"PseudoClaude/internal/llm"
 	"PseudoClaude/internal/permission"
 	"PseudoClaude/internal/prompt"
@@ -247,7 +249,7 @@ func TestSideEffectToolsRunSerially(t *testing.T) {
 		{ID: "b", Name: "write_b", Arguments: json.RawMessage(`{}`)},
 	}
 	events := make(chan Event, 16)
-	results, err := executeToolCalls(context.Background(), registry, tools.Env{}, 1, calls, events, toolExecutionOptions{}, nil, "")
+	results, err := executeToolCalls(context.Background(), registry, tools.Env{}, 1, calls, events, toolExecutionOptions{}, nil, "", toolHookContext{})
 	close(events)
 	if err != nil {
 		t.Fatal(err)
@@ -400,7 +402,7 @@ func TestPermissionDefaultAsksForWriteAndBash(t *testing.T) {
 			defer cancel()
 			done := make(chan []ToolResult, 1)
 			go func() {
-				results, _ := executeToolCalls(ctx, registry, tools.Env{}, 1, []llm.ToolCall{call}, events, toolExecutionOptions{}, newTestPermissionEngine(t), permission.ModeDefault)
+				results, _ := executeToolCalls(ctx, registry, tools.Env{}, 1, []llm.ToolCall{call}, events, toolExecutionOptions{}, newTestPermissionEngine(t), permission.ModeDefault, toolHookContext{})
 				done <- results
 			}()
 			waitForEvent(t, events, EventToolCallStart)
@@ -443,7 +445,7 @@ func TestPermissionApprovalSessionAndForever(t *testing.T) {
 			events := make(chan Event, 8)
 			resultCh := make(chan ToolResult, 1)
 			go func() {
-				resultCh <- executeOneTool(context.Background(), registry, tools.Env{}, 1, call, events, toolExecutionOptions{}, engine, permission.ModeDefault)
+				resultCh <- executeOneTool(context.Background(), registry, tools.Env{}, 1, call, events, toolExecutionOptions{}, engine, permission.ModeDefault, toolHookContext{})
 			}()
 			select {
 			case event := <-events:
@@ -494,7 +496,7 @@ func TestPermissionMixedResultsPreserveOrder(t *testing.T) {
 		{ID: "danger", Name: "run_command", Arguments: json.RawMessage(`{"command":"rm","args":["-rf","/"]}`)},
 	}
 	events := make(chan Event, 16)
-	results, err := executeToolCalls(context.Background(), registry, tools.Env{}, 1, calls, events, toolExecutionOptions{}, newTestPermissionEngine(t), permission.ModeDefault)
+	results, err := executeToolCalls(context.Background(), registry, tools.Env{}, 1, calls, events, toolExecutionOptions{}, newTestPermissionEngine(t), permission.ModeDefault, toolHookContext{})
 	close(events)
 	if err != nil {
 		t.Fatal(err)
@@ -514,7 +516,7 @@ func TestPermissionApprovalCanBeCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := executeToolCalls(ctx, registry, tools.Env{}, 1, []llm.ToolCall{call}, events, toolExecutionOptions{}, newTestPermissionEngine(t), permission.ModeDefault)
+		_, err := executeToolCalls(ctx, registry, tools.Env{}, 1, []llm.ToolCall{call}, events, toolExecutionOptions{}, newTestPermissionEngine(t), permission.ModeDefault, toolHookContext{})
 		done <- err
 	}()
 	for {
@@ -801,6 +803,112 @@ func TestRunnerAutoCompactBeforeOrdinaryRequest(t *testing.T) {
 	}
 }
 
+func TestRunnerHookPromptInjectionConsumesOnce(t *testing.T) {
+	provider := &fakeProvider{streams: [][]llm.StreamEvent{
+		{{ToolCall: &llm.ToolCall{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{}`)}}, {Done: true}},
+		{{Text: "done"}, {Done: true}},
+	}}
+	registry, err := tools.NewRegistry(scriptedTool{name: "read_file", safety: tools.SafetyReadOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := hook.NewEngine([]hook.Rule{{
+		Name:     "inject",
+		Event:    hook.EventPreUserMessage,
+		Index:    0,
+		OnlyOnce: true,
+		Action:   hook.Action{Type: hook.ActionPrompt, Prompt: &hook.PromptAction{Text: "hook reminder"}},
+	}}, hook.Executor{}, nil)
+	q := hook.NewPromptQueue()
+	var conv conversation.Conversation
+	events := collectEvents(Runner{Provider: provider, Registry: registry, Hooks: engine, HookPrompts: q}.Run(context.Background(), Request{
+		UserText:     "hello",
+		Conversation: &conv,
+	}))
+	if lastStop(t, events).Reason != StopCompleted {
+		t.Fatalf("events = %+v", events)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("requests = %d", len(provider.requests))
+	}
+	if !strings.Contains(provider.requests[0].Reminder, "hook reminder") {
+		t.Fatalf("first reminder = %q", provider.requests[0].Reminder)
+	}
+	if strings.Contains(provider.requests[1].Reminder, "hook reminder") {
+		t.Fatalf("second reminder repeated: %q", provider.requests[1].Reminder)
+	}
+}
+
+func TestRunnerHookPreToolUseBlocksAndPostToolUseRuns(t *testing.T) {
+	provider := &fakeProvider{streams: [][]llm.StreamEvent{
+		{{ToolCall: &llm.ToolCall{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"path":"a.txt","content":"x"}`)}}, {Done: true}},
+		{{Text: "done"}, {Done: true}},
+	}}
+	executed := false
+	registry, err := tools.NewRegistry(fakeExecTool{name: "write_file", safety: tools.SafetySideEffect, executed: &executed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	engine := hook.NewEngine([]hook.Rule{
+		{
+			Name:  "block-write",
+			Event: hook.EventPreToolUse,
+			Index: 0,
+			If: &hook.Condition{Mode: hook.CombineAllOf, Atoms: []hook.Atom{{
+				Field:   "tool_name",
+				Matcher: mustPermissionMatcher(t, "=write_file"),
+			}}},
+			Action: hook.Action{Type: hook.ActionShell, Shell: &hook.ShellAction{Command: "echo blocked by hook >&2; exit 2"}},
+		},
+		{
+			Name:   "post",
+			Event:  hook.EventPostToolUse,
+			Index:  1,
+			Action: hook.Action{Type: hook.ActionSubagent, Subagent: &hook.SubagentAction{AgentName: "post-agent", Prompt: "log"}},
+		},
+	}, hook.Executor{Logf: func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }}, nil)
+	var conv conversation.Conversation
+	events := collectEvents(Runner{Provider: provider, Registry: registry, Hooks: engine, Permission: newTestPermissionEngine(t)}.Run(context.Background(), Request{
+		UserText:       "write",
+		PermissionMode: permission.ModeBypassPermissions,
+		Conversation:   &conv,
+	}))
+	if lastStop(t, events).Reason != StopCompleted {
+		t.Fatalf("events = %+v", events)
+	}
+	if executed {
+		t.Fatal("tool should not execute after hook block")
+	}
+	var found bool
+	for _, msg := range conv.Messages() {
+		if msg.ToolResult != nil && msg.ToolResult.IsError && strings.Contains(msg.ToolResult.Content, "[hook block-write] blocked by hook") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing hook blocked result: %+v", conv.Messages())
+	}
+	if len(logs) == 0 || !strings.Contains(strings.Join(logs, "\n"), "post-agent") {
+		t.Fatalf("post hook did not run: logs=%+v", logs)
+	}
+}
+
+func TestRunnerHookNotificationAndStop(t *testing.T) {
+	provider := &fakeProvider{streams: [][]llm.StreamEvent{{{Err: os.ErrInvalid}}}}
+	var logs []string
+	engine := hook.NewEngine([]hook.Rule{
+		{Name: "notice", Event: hook.EventNotification, Index: 0, Action: hook.Action{Type: hook.ActionSubagent, Subagent: &hook.SubagentAction{AgentName: "notice-agent", Prompt: "log"}}},
+	}, hook.Executor{Logf: func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }}, nil)
+	events := collectEvents(Runner{Provider: provider, Registry: &tools.Registry{}, Hooks: engine}.Run(context.Background(), Request{UserText: "hi", Conversation: &conversation.Conversation{}}))
+	if lastStop(t, events).Reason != StopStreamError {
+		t.Fatalf("events = %+v", events)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "notice-agent") {
+		t.Fatalf("notification hook logs = %+v", logs)
+	}
+}
+
 func lastStop(t *testing.T, events []Event) Stop {
 	t.Helper()
 	for i := len(events) - 1; i >= 0; i-- {
@@ -843,4 +951,13 @@ func waitForEvent(t *testing.T, events <-chan Event, eventType EventType) Event 
 			t.Fatalf("timed out waiting for %s", eventType)
 		}
 	}
+}
+
+func mustPermissionMatcher(t *testing.T, pattern string) permission.Matcher {
+	t.Helper()
+	matcher, err := permission.CompileMatcher(pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return matcher
 }
