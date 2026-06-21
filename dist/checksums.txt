@@ -1,0 +1,3 @@
+b1c0f9812227e24df006f52c2e9c851545e64f18d367f12ba6a9e368c8e372b4  PseudoClaude-darwin-amd64
+92f8ef4e5c358713a841bbb6d0921430567ac72eb4f5eceded4d71f6e3ede817  PseudoClaude-darwin-arm64
+3e4704055e6c009ee344cf956c45e6d08f00cfb2e575e68e27d8380a8f11b6f1  PseudoClaude-linux-amd64
