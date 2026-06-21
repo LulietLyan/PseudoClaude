@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"PseudoClaude/internal/compact"
 	"PseudoClaude/internal/conversation"
+	"PseudoClaude/internal/hook"
 	"PseudoClaude/internal/llm"
 	"PseudoClaude/internal/session"
 
@@ -99,6 +101,9 @@ func (m Model) filterResumeInfos(infos []session.Info) []session.Info {
 }
 
 func (m Model) resumeSession(info session.Info) (tea.Model, tea.Cmd) {
+	if m.hookEngine != nil {
+		m.hookEngine.Dispatch(context.Background(), hook.EventSessionEnd, m.hookPayload(hook.EventSessionEnd))
+	}
 	ctx, err := session.OpenContext(m.cwd, info.ID)
 	if err != nil {
 		m.state = stateIdle
@@ -145,6 +150,11 @@ func (m Model) resumeSession(info session.Info) (tea.Model, tea.Cmd) {
 	m.sessionWriter = writer
 	m.compactRuntime = rt
 	m.conv = conversation.NewFromMessages(messages, writer.Hooks())
+	if m.hookEngine != nil {
+		m.hookEngine.ResetForNewSession()
+		result := m.hookEngine.Dispatch(context.Background(), hook.EventSessionResume, m.hookPayload(hook.EventSessionResume))
+		m.hookPrompts.Add(result.InjectedPrompts...)
+	}
 	m.runner.Compact = rt
 	m.runner.Memory = m.memory
 	m.runner.Instructions = m.instructions

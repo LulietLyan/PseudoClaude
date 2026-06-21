@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"PseudoClaude/internal/config"
+	"PseudoClaude/internal/hook"
 	"PseudoClaude/internal/instructions"
 	"PseudoClaude/internal/mcp"
 	"PseudoClaude/internal/memory"
@@ -33,6 +34,13 @@ func main() {
 	instructionResult := instructions.NewLoader(cwd).Load()
 	memoryManager := memory.NewManager(memory.DefaultProjectDir(cwd), memory.DefaultUserDir(home))
 	memoryManager.RefreshIndex()
+	hookEngine := hook.Load(hook.LoadOptions{
+		ProjectRoot: cwd,
+		HomeDir:     home,
+		Logf: func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, "Hook 配置提示: "+format+"\n", args...)
+		},
+	})
 	go func() {
 		for _, err := range session.CleanExpired(cwd, time.Now()) {
 			fmt.Fprintf(os.Stderr, "会话清理提示: %v\n", err)
@@ -113,8 +121,10 @@ func main() {
 		startup = append(startup, "Memory: index loaded")
 	}
 	startup = append(startup, fmt.Sprintf("Skills: %d loaded", len(skillCatalog.List())))
+	startup = append(startup, fmt.Sprintf("Hooks: %d loaded", len(hookEngine.Rules())))
 	model := tui.New(cfg.Providers, cwd, registry, permissionEngine).
 		WithSkills(skillCatalog, activeSkills).
+		WithHooks(hookEngine).
 		WithPersistentContext(instructionResult.Content, memoryManager).
 		WithStartupStatus(startup...)
 	if err := model.Run(); err != nil {

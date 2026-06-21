@@ -8,6 +8,7 @@ import (
 
 	"PseudoClaude/internal/agent"
 	"PseudoClaude/internal/compact"
+	"PseudoClaude/internal/hook"
 	"PseudoClaude/internal/permission"
 
 	"charm.land/bubbles/v2/spinner"
@@ -79,6 +80,9 @@ func (m Model) startManualCompact() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	if m.hookEngine != nil {
+		m.hookEngine.Dispatch(ctx, hook.EventPreCompact, m.hookPayload(hook.EventPreCompact).With("trigger", "manual"))
+	}
 	m.cancel = cancel
 	m.progress = "正在压缩上下文..."
 	m.turnStart = time.Now()
@@ -93,6 +97,12 @@ func (m Model) startManualCompact() (tea.Model, tea.Cmd) {
 			Provider:     m.provider,
 			Trigger:      compact.TriggerManual,
 		})
+		if m.hookEngine != nil {
+			m.hookEngine.Dispatch(ctx, hook.EventPostCompact, m.hookPayload(hook.EventPostCompact).
+				With("trigger", "manual").
+				With("before_tokens", output.BeforeTokens).
+				With("after_tokens", output.AfterTokens))
+		}
 		return compactMsg{output: output, err: err}
 	}, m.spinner.Tick)
 }
@@ -118,6 +128,14 @@ func (m Model) submitAgentTextWithTools(text, printableOverride string, allowedT
 		m.appendTranscript(transcriptEntry{kind: transcriptError, text: "provider 尚未初始化"})
 		return m, nil
 	}
+	if m.hookEngine != nil {
+		result := m.hookEngine.Dispatch(context.Background(), hook.EventUserPromptSubmit, m.hookPayload(hook.EventUserPromptSubmit).With("prompt", text))
+		if result.Blocked {
+			m.appendTranscript(transcriptEntry{kind: transcriptError, text: hookBlockedMessage(result)})
+			return m, nil
+		}
+		m.hookPrompts.Add(result.InjectedPrompts...)
+	}
 	req, printable, err := m.requestForInput(text)
 	if err != nil {
 		m.appendTranscript(transcriptEntry{kind: transcriptError, text: err.Error()})
@@ -137,6 +155,10 @@ func (m Model) submitAgentTextWithTools(text, printableOverride string, allowedT
 	m.runner.Instructions = m.instructions
 	m.runner.Memory = m.memory
 	m.runner.AllowedTools = append([]string(nil), allowedTools...)
+	m.runner.Hooks = m.hookEngine
+	m.runner.HookPrompts = m.hookPrompts
+	m.runner.SessionID = m.sessionCtx.ID
+	m.runner.CWD = m.cwd
 	m.events = m.runner.Run(ctx, req)
 	m.turnStart = time.Now()
 	m.elapsed = 0
@@ -154,6 +176,22 @@ func (m Model) submitAgentTextWithTools(text, printableOverride string, allowedT
 		waitForAgentEvent(m.events),
 		m.spinner.Tick,
 	)
+}
+
+func (m Model) hookPayload(event hook.Event) hook.Payload {
+	return hook.NewPayload(event, m.sessionCtx.ID, m.cwd, m.permissionMode)
+}
+
+func hookBlockedMessage(result hook.DispatchResult) string {
+	name := strings.TrimSpace(result.BlockingHookName)
+	reason := strings.TrimSpace(result.Reason)
+	if reason == "" {
+		reason = "blocked by hook"
+	}
+	if name == "" {
+		return "[hook] " + reason
+	}
+	return "[hook " + name + "] " + reason
 }
 
 func (m Model) requestForInput(text string) (agent.Request, string, error) {

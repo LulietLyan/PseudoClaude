@@ -6,6 +6,7 @@ import (
 
 	"PseudoClaude/internal/command"
 	"PseudoClaude/internal/config"
+	"PseudoClaude/internal/hook"
 	"PseudoClaude/internal/llm"
 	"PseudoClaude/internal/skills"
 
@@ -142,6 +143,24 @@ func TestSkillCommandListsBuiltinSkills(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("/skill output missing %s: %q", want, text)
 		}
+	}
+}
+
+func TestHooksCommandListsLoadedHooks(t *testing.T) {
+	model := New([]config.ProviderConfig{}, t.TempDir(), nil).WithHooks(hook.NewEngine([]hook.Rule{{
+		Name:     "demo-hook",
+		Event:    hook.EventStop,
+		OnlyOnce: true,
+		Action:   hook.Action{Type: hook.ActionPrompt, Prompt: &hook.PromptAction{Text: "x"}},
+	}}, hook.Executor{}, []string{"source.yaml"}))
+	model.textarea.SetValue("/hooks")
+	next, cmd := model.updateIdle(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(Model)
+	if cmd != nil {
+		t.Fatal("unexpected command")
+	}
+	if len(model.transcript) == 0 || !strings.Contains(model.transcript[len(model.transcript)-1].text, "demo-hook") || !strings.Contains(model.transcript[len(model.transcript)-1].text, "Loaded from") {
+		t.Fatalf("hooks transcript = %+v", model.transcript)
 	}
 }
 

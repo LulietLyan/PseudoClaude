@@ -137,6 +137,31 @@ func (a *commandAdapter) ListSkills() []command.SkillSummary {
 	return skillSummaries(a.model.skillCatalog.Summaries())
 }
 
+func (a *commandAdapter) ListHooks() []command.HookSummary {
+	if a == nil || a.model == nil || a.model.hookEngine == nil {
+		return nil
+	}
+	summaries := a.model.hookEngine.Summaries()
+	out := make([]command.HookSummary, 0, len(summaries))
+	for _, summary := range summaries {
+		out = append(out, command.HookSummary{
+			Name:   summary.Name,
+			Event:  summary.Event,
+			Action: summary.Action,
+			Flags:  append([]string(nil), summary.Flags...),
+			Source: summary.Source,
+		})
+	}
+	return out
+}
+
+func (a *commandAdapter) HookSources() []string {
+	if a == nil || a.model == nil || a.model.hookEngine == nil {
+		return nil
+	}
+	return a.model.hookEngine.Sources()
+}
+
 func (a *commandAdapter) RunSkill(name, args string) error {
 	if a == nil || a.model == nil {
 		return nil

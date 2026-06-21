@@ -11,6 +11,7 @@ import (
 	"PseudoClaude/internal/compact"
 	"PseudoClaude/internal/config"
 	"PseudoClaude/internal/conversation"
+	"PseudoClaude/internal/hook"
 	"PseudoClaude/internal/llm"
 	"PseudoClaude/internal/memory"
 	"PseudoClaude/internal/permission"
@@ -85,6 +86,8 @@ type Model struct {
 	skillCatalog     *skills.Catalog
 	activeSkills     *skills.ActiveSkills
 	skillExecutor    skills.Executor
+	hookEngine       *hook.Engine
+	hookPrompts      *hook.PromptQueue
 	completion       completionState
 	toolEnv          tools.Env
 	stickToBottom    bool
@@ -101,6 +104,22 @@ func (m Model) WithSkills(catalog *skills.Catalog, active *skills.ActiveSkills) 
 	m.skillExecutor = skills.Executor{Catalog: catalog, Active: active, Runner: &skillRunnerAdapter{model: &m}}
 	if catalog != nil {
 		_ = command.RegisterSkillCommands(m.commandRegistry, skillSummaries(catalog.Summaries()))
+	}
+	return m
+}
+
+func (m Model) WithHooks(engine *hook.Engine) Model {
+	m.hookEngine = engine
+	if m.hookPrompts == nil {
+		m.hookPrompts = hook.NewPromptQueue()
+	}
+	m.runner.Hooks = engine
+	m.runner.HookPrompts = m.hookPrompts
+	m.runner.SessionID = m.sessionCtx.ID
+	m.runner.CWD = m.cwd
+	if engine != nil {
+		result := engine.Dispatch(context.Background(), hook.EventSessionStart, m.hookPayload(hook.EventSessionStart))
+		m.hookPrompts.Add(result.InjectedPrompts...)
 	}
 	return m
 }
@@ -193,6 +212,7 @@ func New(providers []config.ProviderConfig, cwd string, registry *tools.Registry
 		registry:         registry,
 		commandRegistry:  command.NewBuiltinRegistry(),
 		toolEnv:          tools.DefaultEnv(cwd),
+		hookPrompts:      hook.NewPromptQueue(),
 		permissionMode:   permissionMode,
 		permissionEngine: permissionEngine,
 		showBanner:       true,
@@ -330,6 +350,9 @@ func (m Model) View() tea.View {
 
 func (m Model) Run() error {
 	defer func() {
+		if m.hookEngine != nil {
+			m.hookEngine.Dispatch(context.Background(), hook.EventSessionEnd, m.hookPayload(hook.EventSessionEnd))
+		}
 		if m.sessionWriter != nil {
 			_ = m.sessionWriter.Close()
 		}

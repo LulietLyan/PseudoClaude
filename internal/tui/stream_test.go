@@ -12,6 +12,7 @@ import (
 	"PseudoClaude/internal/agent"
 	"PseudoClaude/internal/compact"
 	"PseudoClaude/internal/config"
+	"PseudoClaude/internal/hook"
 	"PseudoClaude/internal/llm"
 	"PseudoClaude/internal/memory"
 	"PseudoClaude/internal/permission"
@@ -385,6 +386,38 @@ func TestAgentEventToolResultReturnsIdleAfterStop(t *testing.T) {
 	if model.curTool != nil {
 		t.Fatalf("curTool = %+v, want nil", model.curTool)
 	}
+}
+
+func TestUserPromptSubmitHookBlocks(t *testing.T) {
+	engine := hook.NewEngine([]hook.Rule{{
+		Name:  "block-delete",
+		Event: hook.EventUserPromptSubmit,
+		If: &hook.Condition{Mode: hook.CombineAllOf, Atoms: []hook.Atom{{
+			Field:   "prompt",
+			Matcher: mustTUIMatcher(t, "~(?i)delete"),
+		}}},
+		Action: hook.Action{Type: hook.ActionShell, Shell: &hook.ShellAction{Command: `echo "no delete" >&2; exit 2`}},
+	}}, hook.Executor{}, nil)
+	model := New([]config.ProviderConfig{}, t.TempDir(), nil).WithHooks(engine)
+	model.provider = fakeProvider{events: []llm.StreamEvent{{Text: "should not run"}, {Done: true}}}
+	before := model.conv.Len()
+	next, cmd := model.submitAgentTextWithTools("please delete it", "", nil)
+	model = next.(Model)
+	if cmd != nil || model.state != stateIdle || model.conv.Len() != before {
+		t.Fatalf("blocked submission state=%v cmd=%v conv=%d/%d", model.state, cmd, model.conv.Len(), before)
+	}
+	if len(model.transcript) == 0 || !strings.Contains(model.transcript[len(model.transcript)-1].text, "[hook block-delete] no delete") {
+		t.Fatalf("transcript = %+v", model.transcript)
+	}
+}
+
+func mustTUIMatcher(t *testing.T, pattern string) permission.Matcher {
+	t.Helper()
+	matcher, err := permission.CompileMatcher(pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return matcher
 }
 
 func TestPlanAndDoInputHandling(t *testing.T) {
