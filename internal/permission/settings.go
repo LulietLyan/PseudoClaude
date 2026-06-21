@@ -62,17 +62,17 @@ func settingsToRuleSet(settings Settings) (RuleSet, []LoadIssue) {
 	var rules RuleSet
 	var issues []LoadIssue
 	for _, text := range settings.Permissions.Allow {
-		rule, ok := parseRule(text, DecisionAllow)
-		if !ok {
-			issues = append(issues, LoadIssue{Message: "invalid allow rule: " + text})
+		rule, err := parseRuleWithError(text, DecisionAllow)
+		if err != nil {
+			issues = append(issues, LoadIssue{Message: "rule \"" + text + "\" parse failed: " + err.Error()})
 			continue
 		}
 		rules.Allow = append(rules.Allow, rule)
 	}
 	for _, text := range settings.Permissions.Deny {
-		rule, ok := parseRule(text, DecisionDeny)
-		if !ok {
-			issues = append(issues, LoadIssue{Message: "invalid deny rule: " + text})
+		rule, err := parseRuleWithError(text, DecisionDeny)
+		if err != nil {
+			issues = append(issues, LoadIssue{Message: "rule \"" + text + "\" parse failed: " + err.Error()})
 			continue
 		}
 		rules.Deny = append(rules.Deny, rule)

@@ -1,6 +1,7 @@
 package permission
 
 import (
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -9,6 +10,7 @@ import (
 type Rule struct {
 	Tool    string
 	Pattern string
+	Matcher Matcher
 	Action  Decision
 }
 
@@ -18,26 +20,39 @@ type RuleSet struct {
 }
 
 func parseRule(text string, action Decision) (Rule, bool) {
+	rule, err := parseRuleWithError(text, action)
+	return rule, err == nil
+}
+
+func parseRuleWithError(text string, action Decision) (Rule, error) {
 	if action != DecisionAllow && action != DecisionDeny {
-		return Rule{}, false
+		return Rule{}, fmt.Errorf("invalid action %q", action)
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return Rule{}, false
+		return Rule{}, fmt.Errorf("empty rule")
 	}
 	tool := text
 	pattern := ""
 	if idx := strings.Index(text, "("); idx >= 0 {
 		if !strings.HasSuffix(text, ")") {
-			return Rule{}, false
+			return Rule{}, fmt.Errorf("missing closing parenthesis")
 		}
 		tool = strings.TrimSpace(text[:idx])
 		pattern = strings.TrimSpace(text[idx+1 : len(text)-1])
 	}
 	if tool == "" || internalName(tool) == "" {
-		return Rule{}, false
+		return Rule{}, fmt.Errorf("unknown tool %q", tool)
 	}
-	return Rule{Tool: tool, Pattern: pattern, Action: action}, true
+	rule := Rule{Tool: tool, Pattern: pattern, Action: action}
+	if pattern != "" {
+		matcher, err := CompileMatcher(pattern)
+		if err != nil {
+			return Rule{}, err
+		}
+		rule.Matcher = matcher
+	}
+	return rule, nil
 }
 
 func (rs RuleSet) Match(tool, target string, isPath bool) (CheckResult, bool) {
@@ -69,10 +84,15 @@ func ruleMatches(rule Rule, tool, target string, isPath bool) bool {
 	if rule.Pattern == "" {
 		return true
 	}
-	if isPath {
-		return pathGlobMatch(rule.Pattern, target)
+	matcher := rule.Matcher
+	if matcher == nil {
+		compiled, err := CompileMatcher(rule.Pattern)
+		if err != nil {
+			return false
+		}
+		matcher = compiled
 	}
-	return commandGlobMatch(rule.Pattern, target)
+	return matcher.Match(target, isPath)
 }
 
 func commandGlobMatch(pattern, target string) bool {

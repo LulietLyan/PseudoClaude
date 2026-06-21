@@ -32,6 +32,13 @@ func (e *Engine) ruleForCall(call llm.ToolCall) (Rule, string, bool) {
 		pattern = normalizeRulePath(e.root, matchTarget)
 	}
 	rule := Rule{Tool: tool, Pattern: pattern, Action: DecisionAllow}
+	if pattern != "" {
+		matcher, err := CompileMatcher(pattern)
+		if err != nil {
+			return Rule{}, "", false
+		}
+		rule.Matcher = matcher
+	}
 	return rule, ruleString(rule), true
 }
 
@@ -69,11 +76,15 @@ func (e *Engine) PersistLocalAllow(call llm.ToolCall) error {
 
 func appendUniqueRule(rules []Rule, rule Rule) []Rule {
 	for _, existing := range rules {
-		if existing == rule {
+		if ruleEqual(existing, rule) {
 			return rules
 		}
 	}
 	return append(rules, rule)
+}
+
+func ruleEqual(a, b Rule) bool {
+	return a.Tool == b.Tool && a.Pattern == b.Pattern && a.Action == b.Action
 }
 
 func containsString(values []string, want string) bool {

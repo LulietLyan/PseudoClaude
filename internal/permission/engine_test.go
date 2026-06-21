@@ -94,7 +94,8 @@ func TestEngineRulePrecedence(t *testing.T) {
 	if err := engine.AllowForSession(call); err != nil {
 		t.Fatal(err)
 	}
-	engine.session.Deny = append(engine.session.Deny, Rule{Tool: "Bash", Pattern: "git push", Action: DecisionDeny})
+	deny, _ := parseRule("Bash(git push)", DecisionDeny)
+	engine.session.Deny = append(engine.session.Deny, deny)
 	got = engine.Check(ModeDefault, call, tools.SafetySideEffect)
 	if got.Decision != DecisionDeny {
 		t.Fatalf("session deny should beat all: %+v", got)

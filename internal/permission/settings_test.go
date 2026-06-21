@@ -3,6 +3,7 @@ package permission
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -24,6 +25,12 @@ func TestSettings(t *testing.T) {
 	rules, issues := settingsToRuleSet(settings)
 	if len(rules.Allow) != 1 || len(issues) != 1 {
 		t.Fatalf("rules=%+v issues=%+v", rules, issues)
+	}
+	settings = Settings{}
+	settings.Permissions.Allow = []string{"Bash(~[)", "Read"}
+	rules, issues = settingsToRuleSet(settings)
+	if len(rules.Allow) != 1 || len(issues) != 1 || !strings.Contains(issues[0].Message, "parse failed") {
+		t.Fatalf("invalid matcher should be skipped with issue: rules=%+v issues=%+v", rules, issues)
 	}
 	if got := chooseStartMode(Settings{DefaultMode: "strict"}, Settings{DefaultMode: "acceptEdits"}, Settings{DefaultMode: "bypassPermissions"}); got != ModeStrict {
 		t.Fatalf("local mode priority = %s", got)

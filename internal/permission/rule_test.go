@@ -24,6 +24,18 @@ func TestRule(t *testing.T) {
 	if ruleMatches(rule, "write_file", "docs/x.md", true) {
 		t.Fatal("path glob should not match docs")
 	}
+	rule, _ = parseRule("Bash(=git status)", DecisionAllow)
+	if !ruleMatches(rule, "run_command", "git status", false) || ruleMatches(rule, "run_command", "git status -s", false) {
+		t.Fatal("exact command matcher should match only exact target")
+	}
+	rule, _ = parseRule("Bash(~^npm (install|test)$)", DecisionAllow)
+	if !ruleMatches(rule, "run_command", "npm test", false) || ruleMatches(rule, "run_command", "npm run test", false) {
+		t.Fatal("regex command matcher should match expected commands")
+	}
+	rule, _ = parseRule("Bash(!~^rm)", DecisionAllow)
+	if ruleMatches(rule, "run_command", "rm -rf .", false) || !ruleMatches(rule, "run_command", "ls -lh", false) {
+		t.Fatal("not command matcher should invert regex")
+	}
 	rule, _ = parseRule("Read", DecisionAllow)
 	if !ruleMatches(rule, "read_file", "anything", true) {
 		t.Fatal("tool-wide rule should match")
@@ -32,10 +44,9 @@ func TestRule(t *testing.T) {
 		t.Fatal("invalid friendly tool should not parse")
 	}
 
-	rs := RuleSet{
-		Allow: []Rule{{Tool: "Bash", Pattern: "git *", Action: DecisionAllow}},
-		Deny:  []Rule{{Tool: "Bash", Pattern: "git push", Action: DecisionDeny}},
-	}
+	allow, _ := parseRule("Bash(git *)", DecisionAllow)
+	deny, _ := parseRule("Bash(git push)", DecisionDeny)
+	rs := RuleSet{Allow: []Rule{allow}, Deny: []Rule{deny}}
 	got, ok := rs.Match("run_command", "git push", false)
 	if !ok || got.Decision != DecisionDeny {
 		t.Fatalf("deny should win, got %+v ok=%v", got, ok)
@@ -65,10 +76,9 @@ func TestMCPRule(t *testing.T) {
 		t.Fatal("mcp glob should not match other server")
 	}
 
-	rs := RuleSet{
-		Allow: []Rule{{Tool: "mcp__github__*", Action: DecisionAllow}},
-		Deny:  []Rule{{Tool: "mcp__github__delete_issue", Action: DecisionDeny}},
-	}
+	allow, _ := parseRule("mcp__github__*", DecisionAllow)
+	deny, _ := parseRule("mcp__github__delete_issue", DecisionDeny)
+	rs := RuleSet{Allow: []Rule{allow}, Deny: []Rule{deny}}
 	got, ok := rs.Match("mcp__github__delete_issue", "", false)
 	if !ok || got.Decision != DecisionDeny {
 		t.Fatalf("deny should win, got %+v ok=%v", got, ok)
