@@ -91,7 +91,7 @@ func TestRegistryConflicts(t *testing.T) {
 func TestBuiltins(t *testing.T) {
 	reg := NewBuiltinRegistry()
 	visible := reg.Visible()
-	want := []string{"/clear", "/compact", "/do", "/help", "/hooks", "/memory", "/permission", "/plan", "/session", "/skill", "/status"}
+	want := []string{"/agents", "/clear", "/compact", "/do", "/help", "/hooks", "/memory", "/permission", "/plan", "/session", "/skill", "/status"}
 	if len(visible) != len(want) {
 		t.Fatalf("visible count = %d", len(visible))
 	}
@@ -104,7 +104,7 @@ func TestBuiltins(t *testing.T) {
 	for _, cmd := range visible {
 		kinds[cmd.Name] = cmd.Kind
 	}
-	for _, name := range []string{"/help", "/hooks", "/memory", "/permission", "/session", "/skill", "/status"} {
+	for _, name := range []string{"/agents", "/help", "/hooks", "/memory", "/permission", "/session", "/skill", "/status"} {
 		if kinds[name] != KindLocal {
 			t.Fatalf("%s kind = %v", name, kinds[name])
 		}

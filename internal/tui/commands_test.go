@@ -9,6 +9,8 @@ import (
 	"PseudoClaude/internal/hook"
 	"PseudoClaude/internal/llm"
 	"PseudoClaude/internal/skills"
+	"PseudoClaude/internal/subagent"
+	"PseudoClaude/internal/task"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -161,6 +163,25 @@ func TestHooksCommandListsLoadedHooks(t *testing.T) {
 	}
 	if len(model.transcript) == 0 || !strings.Contains(model.transcript[len(model.transcript)-1].text, "demo-hook") || !strings.Contains(model.transcript[len(model.transcript)-1].text, "Loaded from") {
 		t.Fatalf("hooks transcript = %+v", model.transcript)
+	}
+}
+
+func TestAgentsCommandListsBuiltinAgents(t *testing.T) {
+	model := New([]config.ProviderConfig{}, t.TempDir(), nil).WithSubAgents(subagent.LoadCatalog(subagent.LoadOptions{}), task.NewManager(task.Options{}))
+	model.textarea.SetValue("/agents")
+	next, cmd := model.updateIdle(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = next.(Model)
+	if cmd != nil {
+		t.Fatal("unexpected command")
+	}
+	if len(model.transcript) == 0 {
+		t.Fatal("missing transcript")
+	}
+	text := model.transcript[len(model.transcript)-1].text
+	for _, want := range []string{"general-purpose", "explore", "plan"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("/agents output missing %s: %q", want, text)
+		}
 	}
 }
 

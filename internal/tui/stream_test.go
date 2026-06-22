@@ -656,11 +656,12 @@ func TestApprovalInteraction(t *testing.T) {
 	model.state = stateStreaming
 	model.turnStart = time.Now()
 	req := &agent.ApprovalRequest{
-		Call:    llm.ToolCall{ID: "call", Name: "write_file"},
-		Summary: "note.txt",
-		Reason:  "default mode requires ask",
-		Result:  permission.CheckResult{Decision: permission.DecisionAsk, Source: "mode"},
-		Respond: make(chan permission.ApprovalDecision, 1),
+		Call:        llm.ToolCall{ID: "call", Name: "write_file"},
+		Summary:     "note.txt",
+		Reason:      "default mode requires ask",
+		Result:      permission.CheckResult{Decision: permission.DecisionAsk, Source: "mode"},
+		SourceLabel: "explore/task-1",
+		Respond:     make(chan permission.ApprovalDecision, 1),
 	}
 	next, cmd := model.handleAgentEvent(agent.Event{Type: agent.EventApproval, Approval: req})
 	model = next.(Model)
@@ -671,6 +672,9 @@ func TestApprovalInteraction(t *testing.T) {
 	model = next.(Model)
 	if model.approvalCursor != 1 {
 		t.Fatalf("cursor = %d", model.approvalCursor)
+	}
+	if block := stripANSI(model.approvalBlock(80)); !strings.Contains(block, "SubAgent explore/task-1") {
+		t.Fatalf("approval block missing source: %q", block)
 	}
 	next, cmd = model.updateApproving(tea.KeyPressMsg{Code: '3', Text: "3"})
 	model = next.(Model)

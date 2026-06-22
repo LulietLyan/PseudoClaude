@@ -17,6 +17,8 @@ import (
 	"PseudoClaude/internal/permission"
 	"PseudoClaude/internal/session"
 	"PseudoClaude/internal/skills"
+	"PseudoClaude/internal/subagent"
+	"PseudoClaude/internal/task"
 	"PseudoClaude/internal/tools"
 
 	"charm.land/bubbles/v2/key"
@@ -29,7 +31,7 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-const Version = "0.2.0"
+const Version = "0.3.0"
 
 type sessionState int
 
@@ -57,7 +59,7 @@ type Model struct {
 	sessionWriter    *session.Writer
 	instructions     string
 	memory           *memory.Manager
-	events           <-chan agent.Event
+	events           chan agent.Event
 	cancel           context.CancelFunc
 	curReply         string
 	curTool          *toolStatus
@@ -88,6 +90,10 @@ type Model struct {
 	skillExecutor    skills.Executor
 	hookEngine       *hook.Engine
 	hookPrompts      *hook.PromptQueue
+	subagents        *subagent.Catalog
+	tasks            *task.Manager
+	agentHandle      *agent.RunnerHandle
+	pendingTaskNotes []string
 	completion       completionState
 	toolEnv          tools.Env
 	stickToBottom    bool
@@ -121,6 +127,24 @@ func (m Model) WithHooks(engine *hook.Engine) Model {
 		result := engine.Dispatch(context.Background(), hook.EventSessionStart, m.hookPayload(hook.EventSessionStart))
 		m.hookPrompts.Add(result.InjectedPrompts...)
 	}
+	return m
+}
+
+func (m Model) WithSubAgents(catalog *subagent.Catalog, manager *task.Manager) Model {
+	m.subagents = catalog
+	m.tasks = manager
+	if m.agentHandle == nil {
+		m.agentHandle = &agent.RunnerHandle{}
+	}
+	m.runner.Sub.PendingReminderFn = m.drainTaskNotifications
+	return m
+}
+
+func (m Model) WithAgentHandle(handle *agent.RunnerHandle) Model {
+	if handle == nil {
+		handle = &agent.RunnerHandle{}
+	}
+	m.agentHandle = handle
 	return m
 }
 
@@ -295,10 +319,16 @@ func (m Model) WithStartupStatus(messages ...string) Model {
 }
 
 func (m Model) Init() tea.Cmd {
+	var cmds []tea.Cmd
 	if m.state == stateSelecting {
-		return m.list.StartSpinner()
+		cmds = append(cmds, m.list.StartSpinner())
+	} else {
+		cmds = append(cmds, m.textarea.Focus())
 	}
-	return m.textarea.Focus()
+	if m.tasks != nil {
+		cmds = append(cmds, waitForTaskDone(m.tasks.SubscribeDone()))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -307,6 +337,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case taskDoneMsg:
+		m = m.appendTaskNotification(msg.id)
+		if m.tasks != nil {
+			return m, waitForTaskDone(m.tasks.SubscribeDone())
+		}
+		return m, nil
 	case tea.WindowSizeMsg:
 		return m.handleResize(msg), nil
 	case tea.MouseWheelMsg:

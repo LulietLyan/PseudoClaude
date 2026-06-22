@@ -10,12 +10,16 @@ import (
 	"PseudoClaude/internal/compact"
 	"PseudoClaude/internal/hook"
 	"PseudoClaude/internal/permission"
+	"PseudoClaude/internal/task"
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 )
 
 type agentMsg agent.Event
+type taskDoneMsg struct {
+	id string
+}
 type compactMsg struct {
 	output compact.ManageOutput
 	err    error
@@ -28,6 +32,27 @@ func waitForAgentEvent(ch <-chan agent.Event) tea.Cmd {
 			return agentMsg{Type: agent.EventStop, Stop: &agent.Stop{Reason: agent.StopCompleted, Message: "completed"}}
 		}
 		return agentMsg(event)
+	}
+}
+
+func bridgeAgentEvents(src <-chan agent.Event) chan agent.Event {
+	out := make(chan agent.Event)
+	go func() {
+		defer close(out)
+		for event := range src {
+			out <- event
+		}
+	}()
+	return out
+}
+
+func waitForTaskDone(ch <-chan task.DoneEvent) tea.Cmd {
+	return func() tea.Msg {
+		event, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return taskDoneMsg{id: event.TaskID}
 	}
 }
 
@@ -159,7 +184,10 @@ func (m Model) submitAgentTextWithTools(text, printableOverride string, allowedT
 	m.runner.HookPrompts = m.hookPrompts
 	m.runner.SessionID = m.sessionCtx.ID
 	m.runner.CWD = m.cwd
-	m.events = m.runner.Run(ctx, req)
+	m.runner.Sub.PendingReminderFn = m.drainTaskNotifications
+	events := bridgeAgentEvents(m.runner.Run(ctx, req))
+	m.events = events
+	m.refreshAgentHandle(req)
 	m.turnStart = time.Now()
 	m.elapsed = 0
 	m.curReply = ""
@@ -176,6 +204,81 @@ func (m Model) submitAgentTextWithTools(text, printableOverride string, allowedT
 		waitForAgentEvent(m.events),
 		m.spinner.Tick,
 	)
+}
+
+func (m *Model) refreshAgentHandle(req agent.Request) {
+	if m.agentHandle == nil {
+		return
+	}
+	m.agentHandle.Store(agent.RunnerSnapshot{
+		Provider:       m.provider,
+		Registry:       m.registry,
+		Env:            m.toolEnv,
+		Config:         m.runner.Config,
+		Version:        Version,
+		Permission:     m.permissionEngine,
+		Compact:        m.compactRuntime,
+		Instructions:   m.instructions,
+		Memory:         m.memory,
+		SkillsCatalog:  m.runner.SkillsCatalog,
+		ActiveSkills:   m.runner.ActiveSkills,
+		AllowedTools:   m.runner.AllowedTools,
+		Hooks:          m.hookEngine,
+		HookPrompts:    m.hookPrompts,
+		SessionID:      m.sessionCtx.ID,
+		CWD:            m.cwd,
+		Conversation:   req.Conversation,
+		PermissionMode: m.permissionMode,
+		Sub:            m.runner.Sub,
+		Approval:       m.upgradeSubagentApproval,
+	})
+}
+
+func (m *Model) upgradeSubagentApproval(ctx context.Context, req agent.ApprovalRequest) (permission.ApprovalDecision, error) {
+	if m.events == nil {
+		return permission.ApprovalDenyOnce, nil
+	}
+	if req.Respond == nil {
+		req.Respond = make(chan permission.ApprovalDecision, 1)
+	}
+	reqCopy := req
+	if reqCopy.SourceLabel == "" {
+		reqCopy.SourceLabel = "subagent"
+	}
+	event := agent.Event{Type: agent.EventApproval, Source: reqCopy.SourceLabel, ToolCall: &reqCopy.Call, Approval: &reqCopy}
+	select {
+	case <-ctx.Done():
+		return permission.ApprovalDenyOnce, ctx.Err()
+	case m.events <- event:
+	}
+	select {
+	case decision := <-reqCopy.Respond:
+		return decision, nil
+	case <-ctx.Done():
+		return permission.ApprovalDenyOnce, ctx.Err()
+	}
+}
+
+func (m *Model) drainTaskNotifications() []string {
+	if len(m.pendingTaskNotes) == 0 {
+		return nil
+	}
+	out := append([]string(nil), m.pendingTaskNotes...)
+	m.pendingTaskNotes = nil
+	return out
+}
+
+func (m Model) appendTaskNotification(id string) Model {
+	if m.tasks == nil {
+		return m
+	}
+	snapshot, ok := m.tasks.Get(id)
+	if !ok {
+		return m
+	}
+	m.pendingTaskNotes = append(m.pendingTaskNotes, task.FormatNotification(snapshot))
+	m.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "Background task updated: " + id + " (" + string(snapshot.Status) + ")"})
+	return m
 }
 
 func (m Model) hookPayload(event hook.Event) hook.Payload {

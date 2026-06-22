@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"PseudoClaude/internal/agent"
 	"PseudoClaude/internal/config"
 	"PseudoClaude/internal/hook"
 	"PseudoClaude/internal/instructions"
@@ -15,6 +16,8 @@ import (
 	"PseudoClaude/internal/permission"
 	"PseudoClaude/internal/session"
 	"PseudoClaude/internal/skills"
+	"PseudoClaude/internal/subagent"
+	"PseudoClaude/internal/task"
 	"PseudoClaude/internal/tools"
 	"PseudoClaude/internal/tui"
 )
@@ -106,6 +109,34 @@ func main() {
 			skillCatalog.Remove(warning.Skill)
 		}
 	}
+	subagentCatalog := subagent.LoadCatalog(subagent.LoadOptions{
+		ProjectRoot: cwd,
+		HomeDir:     home,
+		Logf: func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, "Agent 配置提示: "+format+"\n", args...)
+		},
+	})
+	taskManager := task.NewManager(task.Options{})
+	agentHandle := &agent.RunnerHandle{}
+	if err := registry.Register(&agent.AgentTool{
+		Catalog: subagentCatalog,
+		Tasks:   taskManager,
+		Parent:  agentHandle,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "Agent 工具注册错误: %v\n", err)
+		os.Exit(1)
+	}
+	for _, tool := range []tools.Tool{
+		task.NewTaskListTool(taskManager),
+		task.NewTaskGetTool(taskManager),
+		task.NewTaskStopTool(taskManager),
+		task.NewSendMessageTool(taskManager),
+	} {
+		if err := registry.Register(tool); err != nil {
+			fmt.Fprintf(os.Stderr, "Task 工具注册错误: %v\n", err)
+			os.Exit(1)
+		}
+	}
 	mcpStatus := fmt.Sprintf("MCP: %d/%d connected, %d registered",
 		mcpStats.Connected, mcpStats.Configured, mcpStats.Registered)
 
@@ -122,9 +153,12 @@ func main() {
 	}
 	startup = append(startup, fmt.Sprintf("Skills: %d loaded", len(skillCatalog.List())))
 	startup = append(startup, fmt.Sprintf("Hooks: %d loaded", len(hookEngine.Rules())))
+	startup = append(startup, fmt.Sprintf("Agents: %d loaded", len(subagentCatalog.List())))
 	model := tui.New(cfg.Providers, cwd, registry, permissionEngine).
+		WithAgentHandle(agentHandle).
 		WithSkills(skillCatalog, activeSkills).
 		WithHooks(hookEngine).
+		WithSubAgents(subagentCatalog, taskManager).
 		WithPersistentContext(instructionResult.Content, memoryManager).
 		WithStartupStatus(startup...)
 	if err := model.Run(); err != nil {

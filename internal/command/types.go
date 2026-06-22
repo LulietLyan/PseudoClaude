@@ -86,6 +86,9 @@ type Controller interface {
 	ListSkills() []SkillSummary
 	ListHooks() []HookSummary
 	HookSources() []string
+	ListAgents() []AgentSummary
+	DescribeAgent(name string) (AgentDetail, bool)
+	ReloadAgents()
 	RunSkill(name, args string) error
 	ReloadSkills()
 	ClearActiveSkills()
@@ -104,4 +107,21 @@ type HookSummary struct {
 	Action string
 	Flags  []string
 	Source string
+}
+
+type AgentSummary struct {
+	Name            string
+	Description     string
+	Source          string
+	Model           string
+	MaxTurns        int
+	Background      bool
+	Tools           []string
+	DisallowedTools []string
+}
+
+type AgentDetail struct {
+	Active     AgentSummary
+	Overridden []AgentSummary
+	Prompt     string
 }

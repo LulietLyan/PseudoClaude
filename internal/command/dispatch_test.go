@@ -7,15 +7,16 @@ import (
 )
 
 type fakeController struct {
-	idle        bool
-	messages    []string
-	messageKind []MessageKind
-	workMode    WorkMode
-	preset      string
-	runSkill    string
-	clearSkills bool
-	compact     bool
-	clear       bool
+	idle         bool
+	messages     []string
+	messageKind  []MessageKind
+	workMode     WorkMode
+	preset       string
+	runSkill     string
+	clearSkills  bool
+	compact      bool
+	clear        bool
+	reloadAgents bool
 }
 
 func (f *fakeController) Show(kind MessageKind, text string) {
@@ -41,6 +42,16 @@ func (f *fakeController) RefreshStatus()                         {}
 func (f *fakeController) ListSkills() []SkillSummary             { return nil }
 func (f *fakeController) ListHooks() []HookSummary               { return nil }
 func (f *fakeController) HookSources() []string                  { return nil }
+func (f *fakeController) ListAgents() []AgentSummary {
+	return []AgentSummary{{Name: "explore", Description: "Explore.", Source: "builtin", Model: "haiku"}}
+}
+func (f *fakeController) DescribeAgent(name string) (AgentDetail, bool) {
+	if name != "explore" {
+		return AgentDetail{}, false
+	}
+	return AgentDetail{Active: AgentSummary{Name: "explore", Description: "Explore.", Source: "builtin", Model: "haiku"}, Prompt: "Prompt."}, true
+}
+func (f *fakeController) ReloadAgents() { f.reloadAgents = true }
 func (f *fakeController) RunSkill(name, args string) error {
 	f.runSkill = name + ":" + args
 	return nil
@@ -133,5 +144,24 @@ func TestDispatchRegisteredSkillCommand(t *testing.T) {
 	got := Dispatch(reg, "/demo hello", ctl)
 	if !got.Handled || got.Kind != KindSkill || ctl.runSkill != "demo:hello" {
 		t.Fatalf("got=%+v ctl=%+v", got, ctl)
+	}
+}
+
+func TestAgentsCommand(t *testing.T) {
+	reg := NewBuiltinRegistry()
+	ctl := &fakeController{idle: true}
+	got := Dispatch(reg, "/agents", ctl)
+	if !got.Handled || len(ctl.messages) == 0 || !strings.Contains(ctl.messages[0], "explore") {
+		t.Fatalf("/agents result=%+v messages=%+v", got, ctl.messages)
+	}
+	ctl = &fakeController{idle: true}
+	got = Dispatch(reg, "/agents reload", ctl)
+	if !got.Handled || !ctl.reloadAgents {
+		t.Fatalf("/agents reload result=%+v ctl=%+v", got, ctl)
+	}
+	ctl = &fakeController{idle: true}
+	got = Dispatch(reg, "/agents explore", ctl)
+	if !got.Handled || len(ctl.messages) == 0 || !strings.Contains(ctl.messages[0], "Prompt.") {
+		t.Fatalf("/agents explore result=%+v messages=%+v", got, ctl.messages)
 	}
 }

@@ -124,6 +124,33 @@ func Builtins() []Command {
 			},
 		},
 		{
+			Name:        "/agents",
+			Aliases:     []string{"/agent"},
+			Description: "List and inspect sub Agent roles.",
+			Usage:       "/agents [reload|name]",
+			Kind:        KindLocal,
+			ArgHint:     "[reload|name]",
+			Handler: func(ctx Context, ctl Controller) error {
+				arg := strings.TrimSpace(ctx.Args)
+				if strings.EqualFold(arg, "reload") {
+					ctl.ReloadAgents()
+					ctl.Show(MessageInfo, FormatAgents(ctl.ListAgents()))
+					return nil
+				}
+				if arg != "" {
+					detail, ok := ctl.DescribeAgent(arg)
+					if !ok {
+						ctl.Show(MessageError, "Sub agent not found: "+arg)
+						return nil
+					}
+					ctl.Show(MessageInfo, FormatAgentDetail(detail))
+					return nil
+				}
+				ctl.Show(MessageInfo, FormatAgents(ctl.ListAgents()))
+				return nil
+			},
+		},
+		{
 			Name:        "/status",
 			Aliases:     []string{"/st"},
 			Description: "Show runtime status.",

@@ -69,6 +69,57 @@ func FormatHooks(hooks []HookSummary, sources []string) string {
 	return strings.Join(lines, "\n")
 }
 
+func FormatAgents(agents []AgentSummary) string {
+	if len(agents) == 0 {
+		return "No sub agents loaded."
+	}
+	lines := []string{fmt.Sprintf("Loaded sub agents (%d):", len(agents)), ""}
+	for _, agent := range agents {
+		limits := agentLimits(agent)
+		if limits != "" {
+			limits = "  " + limits
+		}
+		lines = append(lines, fmt.Sprintf("  %s  %s  source=%s model=%s maxTurns=%d background=%v%s",
+			agent.Name,
+			valueOrEmpty(agent.Description),
+			valueOrEmpty(agent.Source),
+			valueOrEmpty(agent.Model),
+			agent.MaxTurns,
+			agent.Background,
+			limits,
+		))
+	}
+	lines = append(lines, "", "Run /agents <name> for details or /agents reload to reload project and user agents.")
+	return strings.Join(lines, "\n")
+}
+
+func FormatAgentDetail(detail AgentDetail) string {
+	if detail.Active.Name == "" {
+		return "Sub agent not found."
+	}
+	lines := []string{
+		"Sub agent: " + detail.Active.Name,
+		"Description: " + valueOrEmpty(detail.Active.Description),
+		"Source: " + valueOrEmpty(detail.Active.Source),
+		"Model: " + valueOrEmpty(detail.Active.Model),
+		fmt.Sprintf("Max turns: %d", detail.Active.MaxTurns),
+		fmt.Sprintf("Background: %v", detail.Active.Background),
+	}
+	if limits := agentLimits(detail.Active); limits != "" {
+		lines = append(lines, "Limits: "+limits)
+	}
+	if len(detail.Overridden) > 0 {
+		lines = append(lines, "", "Overridden sources:")
+		for _, agent := range detail.Overridden {
+			lines = append(lines, fmt.Sprintf("  %s  source=%s model=%s", agent.Name, valueOrEmpty(agent.Source), valueOrEmpty(agent.Model)))
+		}
+	}
+	if strings.TrimSpace(detail.Prompt) != "" {
+		lines = append(lines, "", "Prompt:", strings.TrimSpace(detail.Prompt))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func FormatHelpHint() string {
 	return "Need help? Type /help to view available commands, usage, and descriptions."
 }
@@ -110,4 +161,15 @@ func valueOrEmpty(value string) string {
 		return "(none)"
 	}
 	return value
+}
+
+func agentLimits(agent AgentSummary) string {
+	parts := []string{}
+	if len(agent.Tools) > 0 {
+		parts = append(parts, "tools="+strings.Join(agent.Tools, ","))
+	}
+	if len(agent.DisallowedTools) > 0 {
+		parts = append(parts, "disallowed="+strings.Join(agent.DisallowedTools, ","))
+	}
+	return strings.Join(parts, " ")
 }

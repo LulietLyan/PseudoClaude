@@ -321,6 +321,9 @@ func (m Model) approvalBlock(width int) string {
 		"Target: " + fitLine(req.Summary, innerWidth),
 		"Reason: " + fitLine(req.Reason, innerWidth),
 	}
+	if strings.TrimSpace(req.SourceLabel) != "" {
+		lines = append(lines, "Source: "+fitLine("SubAgent "+req.SourceLabel, innerWidth))
+	}
 	for i, choice := range approvalChoices {
 		line := "  " + choice.label
 		if i == m.approvalCursor {

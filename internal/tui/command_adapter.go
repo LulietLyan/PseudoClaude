@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"PseudoClaude/internal/command"
+	"PseudoClaude/internal/subagent"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -162,12 +163,66 @@ func (a *commandAdapter) HookSources() []string {
 	return a.model.hookEngine.Sources()
 }
 
+func (a *commandAdapter) ListAgents() []command.AgentSummary {
+	if a == nil || a.model == nil || a.model.subagents == nil {
+		return nil
+	}
+	defs := a.model.subagents.List()
+	out := make([]command.AgentSummary, 0, len(defs))
+	for _, def := range defs {
+		out = append(out, agentSummary(def))
+	}
+	return out
+}
+
+func (a *commandAdapter) DescribeAgent(name string) (command.AgentDetail, bool) {
+	if a == nil || a.model == nil || a.model.subagents == nil {
+		return command.AgentDetail{}, false
+	}
+	active, ok := a.model.subagents.Resolve(name)
+	if !ok {
+		return command.AgentDetail{}, false
+	}
+	all := a.model.subagents.ListAll(name)
+	var overridden []command.AgentSummary
+	for _, def := range all {
+		if def.Source == active.Source && def.Path == active.Path {
+			continue
+		}
+		overridden = append(overridden, agentSummary(def))
+	}
+	return command.AgentDetail{Active: agentSummary(active), Overridden: overridden, Prompt: active.SystemPrompt}, true
+}
+
+func (a *commandAdapter) ReloadAgents() {
+	if a == nil || a.model == nil || a.model.subagents == nil {
+		return
+	}
+	result := a.model.subagents.Reload(subagent.LoadOptions{ProjectRoot: a.model.cwd})
+	for _, warning := range result.Warnings {
+		a.model.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "Agent warning: " + subagent.FormatWarning(warning)})
+	}
+}
+
 func (a *commandAdapter) RunSkill(name, args string) error {
 	if a == nil || a.model == nil {
 		return nil
 	}
 	a.model.skillExecutor.Runner = &skillRunnerAdapter{model: a.model, cmds: &a.cmds}
 	return a.model.skillExecutor.Execute(name, args)
+}
+
+func agentSummary(def subagent.Definition) command.AgentSummary {
+	return command.AgentSummary{
+		Name:            def.Name,
+		Description:     def.Description,
+		Source:          def.Source.String(),
+		Model:           string(def.Model),
+		MaxTurns:        def.MaxTurns,
+		Background:      def.Background,
+		Tools:           append([]string(nil), def.Tools...),
+		DisallowedTools: append([]string(nil), def.DisallowedTools...),
+	}
 }
 
 func (a *commandAdapter) ReloadSkills() {
