@@ -35,6 +35,7 @@ type Runner struct {
 	HookPrompts   *hook.PromptQueue
 	SessionID     string
 	CWD           string
+	Sub           SubRunOptions
 }
 
 type MemoryUpdater interface {
@@ -85,6 +86,9 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 		ctx = context.Background()
 	}
 	cfg := r.Config.normalize()
+	if r.Sub.MaxTurns > 0 {
+		cfg.MaxIterations = r.Sub.MaxTurns
+	}
 	if req.Conversation == nil {
 		req.Conversation = &conversation.Conversation{}
 	}
@@ -101,6 +105,9 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 	userText, defs, toolOpts := r.prepareRequest(req)
 	startLen := req.Conversation.Len()
 	permissionMode := req.PermissionMode
+	if r.Sub.PermissionMode != "" {
+		permissionMode = r.Sub.PermissionMode
+	}
 	if permissionMode == "" {
 		if r.Permission != nil {
 			permissionMode = r.Permission.StartMode()
@@ -118,6 +125,9 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 		SkillsCatalog: prompt.RenderSkillsCatalog(r.skillCatalogItems()),
 		Memory:        memoryIndex,
 	})
+	if r.Sub.SystemPrompt != "" {
+		stableSystem = r.Sub.SystemPrompt
+	}
 	sendEvent(ctx, events, Event{Type: EventProgress, Message: "agent run started"})
 
 	unknownCount := 0
@@ -198,7 +208,9 @@ func (r Runner) run(ctx context.Context, req Request, events chan<- Event) {
 				r.Compact.UpdateUsageAnchor(out.Usage, req.Conversation.Len())
 			}
 			unknownCount = 0
-			r.updateMemoryAfterRun(req.Conversation, startLen)
+			if !r.Sub.IsSubAgent {
+				r.updateMemoryAfterRun(req.Conversation, startLen)
+			}
 			r.dispatchHook(ctx, hook.EventStop, permissionMode, hook.Payload{"iter": iteration})
 			sendStop(ctx, events, iteration, StopCompleted, "completed")
 			return
@@ -275,6 +287,9 @@ func (r Runner) reminder(mode Mode, iteration int) string {
 	if r.HookPrompts != nil {
 		parts = append(parts, r.HookPrompts.Drain()...)
 	}
+	if r.Sub.PendingReminderFn != nil {
+		parts = append(parts, r.Sub.PendingReminderFn()...)
+	}
 	return strings.Join(parts, "\n\n")
 }
 
@@ -312,11 +327,12 @@ func (r Runner) prepareRequest(req Request) (string, []tools.Definition, toolExe
 		return planPrompt(req.PlanTask), filterDefinitionsBySafety(r.Registry.DefinitionsFiltered(r.AllowedTools), tools.SafetyReadOnly), toolExecutionOptions{
 			AllowedSafety: map[tools.Safety]bool{tools.SafetyReadOnly: true},
 			AllowedNames:  allowedNames,
+			Sub:           r.Sub,
 		}
 	case ModeDo:
-		return doPrompt(req.PlanTask, req.PlanText), r.Registry.DefinitionsFiltered(r.AllowedTools), toolExecutionOptions{AllowedNames: allowedNames}
+		return doPrompt(req.PlanTask, req.PlanText), r.Registry.DefinitionsFiltered(r.AllowedTools), toolExecutionOptions{AllowedNames: allowedNames, Sub: r.Sub}
 	default:
-		return requestText(req), r.Registry.DefinitionsFiltered(r.AllowedTools), toolExecutionOptions{AllowedNames: allowedNames}
+		return requestText(req), r.Registry.DefinitionsFiltered(r.AllowedTools), toolExecutionOptions{AllowedNames: allowedNames, Sub: r.Sub}
 	}
 }
 

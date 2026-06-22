@@ -44,6 +44,7 @@ const (
 type Event struct {
 	Type       EventType
 	Iteration  int
+	Source     string
 	Text       string
 	Message    string
 	ToolCall   *llm.ToolCall
@@ -67,9 +68,10 @@ type ToolResult struct {
 }
 
 type ApprovalRequest struct {
-	Call    llm.ToolCall
-	Summary string
-	Reason  string
-	Result  permission.CheckResult
-	Respond chan permission.ApprovalDecision
+	Call        llm.ToolCall
+	Summary     string
+	Reason      string
+	Result      permission.CheckResult
+	SourceLabel string
+	Respond     chan permission.ApprovalDecision
 }

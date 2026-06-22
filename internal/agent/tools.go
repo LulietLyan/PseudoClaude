@@ -22,6 +22,7 @@ type toolBatch struct {
 type toolExecutionOptions struct {
 	AllowedSafety map[tools.Safety]bool
 	AllowedNames  map[string]bool
+	Sub           SubRunOptions
 }
 
 type toolHookContext struct {
@@ -139,8 +140,11 @@ func permissionCheckedTool(ctx context.Context, registry *tools.Registry, env to
 	case permission.DecisionDeny:
 		return permissionDeniedResult(call, check)
 	case permission.DecisionAsk:
+		if opts.Sub.DontAsk {
+			return executeAllowedTool(ctx, registry, env, call, opts)
+		}
 		dispatchNotificationHook(ctx, hooks, "approval", summarizeCall(call))
-		decision, err := requestApproval(ctx, call, check, events, iteration)
+		decision, err := requestApproval(ctx, call, check, events, iteration, opts.Sub)
 		if err != nil {
 			return tools.Failure(call.Name, "permission_canceled", err.Error(), permissionMetadata(call, check))
 		}
@@ -270,15 +274,19 @@ func shouldRunSerialForPermission(engine *permission.Engine, mode permission.Mod
 	return check.Decision == permission.DecisionAsk
 }
 
-func requestApproval(ctx context.Context, call llm.ToolCall, result permission.CheckResult, events chan<- Event, iteration int) (permission.ApprovalDecision, error) {
+func requestApproval(ctx context.Context, call llm.ToolCall, result permission.CheckResult, events chan<- Event, iteration int, sub SubRunOptions) (permission.ApprovalDecision, error) {
 	req := &ApprovalRequest{
-		Call:    call,
-		Summary: summarizeCall(call),
-		Reason:  result.Reason,
-		Result:  result,
-		Respond: make(chan permission.ApprovalDecision, 1),
+		Call:        call,
+		Summary:     summarizeCall(call),
+		Reason:      result.Reason,
+		Result:      result,
+		SourceLabel: sub.label(),
+		Respond:     make(chan permission.ApprovalDecision, 1),
 	}
-	if !sendEvent(ctx, events, Event{Type: EventApproval, Iteration: iteration, ToolCall: &call, Approval: req}) {
+	if sub.ApprovalUpgrader != nil {
+		return sub.ApprovalUpgrader(ctx, *req)
+	}
+	if !sendEvent(ctx, events, Event{Type: EventApproval, Iteration: iteration, Source: sub.label(), ToolCall: &call, Approval: req}) {
 		if ctx.Err() != nil {
 			return permission.ApprovalDenyOnce, ctx.Err()
 		}

@@ -13,6 +13,7 @@ type Definition struct {
 	InputSchema map[string]any
 	Safety      Safety
 	System      bool
+	Timeout     time.Duration
 }
 
 type Safety string
@@ -77,6 +78,9 @@ func (r Result) JSON() string {
 }
 
 func objectSchema(properties map[string]any, required ...string) map[string]any {
+	if required == nil {
+		required = []string{}
+	}
 	return map[string]any{
 		"type":       "object",
 		"properties": properties,

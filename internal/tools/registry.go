@@ -180,7 +180,11 @@ func (r *Registry) Execute(ctx context.Context, call Call, env Env) Result {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	execCtx, cancel := context.WithTimeout(ctx, env.Timeout)
+	timeout := env.Timeout
+	if def := tool.Definition(); def.Timeout > 0 {
+		timeout = def.Timeout
+	}
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	done := make(chan Result, 1)
