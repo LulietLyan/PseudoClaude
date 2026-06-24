@@ -2,6 +2,8 @@
 .PseudoClaude/permissions.local.yaml
 .PseudoClaude/sessions/
 .PseudoClaude/memory/
+.PseudoClaude/worktrees/
+.PseudoClaude/worktree_session.json
 .PseudoClaude/skills/
 .PseudoClaude/*.example
 .agents/
