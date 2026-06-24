@@ -43,9 +43,6 @@ func OffloadToolResults(messages []llm.Message, rt *Runtime) Layer1Output {
 		if ok {
 			if decision == DecisionReplace {
 				result.Content = preview
-				if messages[i].ToolResult == nil || messages[i].ToolResult.Content != preview {
-					firstErr = firstErr
-				}
 			}
 			continue
 		}
