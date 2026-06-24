@@ -20,6 +20,7 @@ import (
 	"PseudoClaude/internal/task"
 	"PseudoClaude/internal/tools"
 	"PseudoClaude/internal/tui"
+	"PseudoClaude/internal/worktree"
 )
 
 func main() {
@@ -60,6 +61,18 @@ func main() {
 		} else {
 			fmt.Fprintf(os.Stderr, "权限配置提示: %s\n", issue.Message)
 		}
+	}
+	var worktreeMgr *worktree.Manager
+	if mgr, err := worktree.NewManager(worktree.Options{
+		RepoRoot: cwd,
+		Logf: func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, "Worktree 提示: "+format+"\n", args...)
+		},
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "Worktree 功能已禁用: %v\n", err)
+	} else {
+		worktreeMgr = mgr
+		go worktreeMgr.SweepStale(context.Background(), time.Now().Add(-24*time.Hour))
 	}
 
 	registry, err := tools.DefaultRegistry()
@@ -119,9 +132,10 @@ func main() {
 	taskManager := task.NewManager(task.Options{})
 	agentHandle := &agent.RunnerHandle{}
 	if err := registry.Register(&agent.AgentTool{
-		Catalog: subagentCatalog,
-		Tasks:   taskManager,
-		Parent:  agentHandle,
+		Catalog:   subagentCatalog,
+		Tasks:     taskManager,
+		Parent:    agentHandle,
+		Worktrees: worktreeMgr,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "Agent 工具注册错误: %v\n", err)
 		os.Exit(1)
@@ -154,8 +168,14 @@ func main() {
 	startup = append(startup, fmt.Sprintf("Skills: %d loaded", len(skillCatalog.List())))
 	startup = append(startup, fmt.Sprintf("Hooks: %d loaded", len(hookEngine.Rules())))
 	startup = append(startup, fmt.Sprintf("Agents: %d loaded", len(subagentCatalog.List())))
+	if worktreeMgr != nil {
+		startup = append(startup, "Worktree: enabled")
+	} else {
+		startup = append(startup, "Worktree: disabled")
+	}
 	model := tui.New(cfg.Providers, cwd, registry, permissionEngine).
 		WithAgentHandle(agentHandle).
+		WithWorktrees(worktreeMgr).
 		WithSkills(skillCatalog, activeSkills).
 		WithHooks(hookEngine).
 		WithSubAgents(subagentCatalog, taskManager).

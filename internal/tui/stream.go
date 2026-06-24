@@ -174,7 +174,9 @@ func (m Model) submitAgentTextWithTools(text, printableOverride string, allowedT
 	m.cancel = cancel
 	m.runner.Provider = m.provider
 	m.runner.Registry = m.registry
-	m.runner.Env = m.toolEnv
+	env := m.toolEnv
+	env.CWD = m.effectiveCWD()
+	m.runner.Env = env
 	m.runner.Permission = m.permissionEngine
 	m.runner.Compact = m.compactRuntime
 	m.runner.Instructions = m.instructions
@@ -183,7 +185,7 @@ func (m Model) submitAgentTextWithTools(text, printableOverride string, allowedT
 	m.runner.Hooks = m.hookEngine
 	m.runner.HookPrompts = m.hookPrompts
 	m.runner.SessionID = m.sessionCtx.ID
-	m.runner.CWD = m.cwd
+	m.runner.CWD = m.effectiveCWD()
 	m.runner.Sub.PendingReminderFn = m.drainTaskNotifications
 	events := bridgeAgentEvents(m.runner.Run(ctx, req))
 	m.events = events
@@ -210,10 +212,12 @@ func (m *Model) refreshAgentHandle(req agent.Request) {
 	if m.agentHandle == nil {
 		return
 	}
+	env := m.toolEnv
+	env.CWD = m.effectiveCWD()
 	m.agentHandle.Store(agent.RunnerSnapshot{
 		Provider:       m.provider,
 		Registry:       m.registry,
-		Env:            m.toolEnv,
+		Env:            env,
 		Config:         m.runner.Config,
 		Version:        Version,
 		Permission:     m.permissionEngine,
@@ -226,7 +230,7 @@ func (m *Model) refreshAgentHandle(req agent.Request) {
 		Hooks:          m.hookEngine,
 		HookPrompts:    m.hookPrompts,
 		SessionID:      m.sessionCtx.ID,
-		CWD:            m.cwd,
+		CWD:            m.effectiveCWD(),
 		Conversation:   req.Conversation,
 		PermissionMode: m.permissionMode,
 		Sub:            m.runner.Sub,
@@ -282,7 +286,7 @@ func (m Model) appendTaskNotification(id string) Model {
 }
 
 func (m Model) hookPayload(event hook.Event) hook.Payload {
-	return hook.NewPayload(event, m.sessionCtx.ID, m.cwd, m.permissionMode)
+	return hook.NewPayload(event, m.sessionCtx.ID, m.effectiveCWD(), m.permissionMode)
 }
 
 func hookBlockedMessage(result hook.DispatchResult) string {

@@ -20,6 +20,7 @@ import (
 	"PseudoClaude/internal/subagent"
 	"PseudoClaude/internal/task"
 	"PseudoClaude/internal/tools"
+	"PseudoClaude/internal/worktree"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/list"
@@ -82,6 +83,8 @@ type Model struct {
 	height           int
 	initErr          error
 	cwd              string
+	repoCWD          string
+	activeCWD        string
 	startupStatus    []string
 	registry         *tools.Registry
 	commandRegistry  *command.Registry
@@ -92,6 +95,7 @@ type Model struct {
 	hookPrompts      *hook.PromptQueue
 	subagents        *subagent.Catalog
 	tasks            *task.Manager
+	worktrees        *worktree.Manager
 	agentHandle      *agent.RunnerHandle
 	pendingTaskNotes []string
 	completion       completionState
@@ -122,12 +126,41 @@ func (m Model) WithHooks(engine *hook.Engine) Model {
 	m.runner.Hooks = engine
 	m.runner.HookPrompts = m.hookPrompts
 	m.runner.SessionID = m.sessionCtx.ID
-	m.runner.CWD = m.cwd
+	m.runner.CWD = m.effectiveCWD()
 	if engine != nil {
 		result := engine.Dispatch(context.Background(), hook.EventSessionStart, m.hookPayload(hook.EventSessionStart))
 		m.hookPrompts.Add(result.InjectedPrompts...)
 	}
 	return m
+}
+
+func (m Model) WithWorktrees(manager *worktree.Manager) Model {
+	m.worktrees = manager
+	if manager != nil {
+		m.activeCWD = manager.EffectiveCWD(m.repoCWD)
+	}
+	return m
+}
+
+func (m Model) effectiveCWD() string {
+	if strings.TrimSpace(m.activeCWD) != "" {
+		return m.activeCWD
+	}
+	if strings.TrimSpace(m.repoCWD) != "" {
+		return m.repoCWD
+	}
+	return m.cwd
+}
+
+func (m *Model) setActiveCWD(path string) {
+	if strings.TrimSpace(path) == "" {
+		path = m.repoCWD
+	}
+	m.activeCWD = path
+	m.cwd = path
+	m.toolEnv.CWD = path
+	m.runner.CWD = path
+	m.runner.Env.CWD = path
 }
 
 func (m Model) WithSubAgents(catalog *subagent.Catalog, manager *task.Manager) Model {
@@ -233,6 +266,7 @@ func New(providers []config.ProviderConfig, cwd string, registry *tools.Registry
 		height:           24,
 		initErr:          err,
 		cwd:              cwd,
+		repoCWD:          cwd,
 		registry:         registry,
 		commandRegistry:  command.NewBuiltinRegistry(),
 		toolEnv:          tools.DefaultEnv(cwd),

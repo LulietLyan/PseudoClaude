@@ -228,7 +228,7 @@ func (m Model) bannerView() string {
 	lines = append(lines,
 		"",
 		centerLine(bannerTitleStyle.Render("PseudoClaude v"+Version), contentWidth),
-		centerLine(bannerMetaStyle.Render(fitLine("cwd: "+m.cwd, contentWidth)), contentWidth),
+		centerLine(bannerMetaStyle.Render(fitLine("cwd: "+m.effectiveCWD(), contentWidth)), contentWidth),
 		centerLine(bannerMetaStyle.Render("Ready. Shift+Tab cycles permission mode. Type /help for commands."), contentWidth),
 	)
 	for _, status := range m.startupStatus {

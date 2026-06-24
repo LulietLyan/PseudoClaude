@@ -151,6 +151,15 @@ func Builtins() []Command {
 			},
 		},
 		{
+			Name:        "/worktree",
+			Aliases:     []string{"/wt"},
+			Description: "Manage isolated Git worktrees.",
+			Usage:       "/worktree [create|list|enter|exit|remove]",
+			Kind:        KindUI,
+			ArgHint:     "[create|list|enter|exit|remove]",
+			Handler:     handleWorktreeCommand,
+		},
+		{
 			Name:        "/status",
 			Aliases:     []string{"/st"},
 			Description: "Show runtime status.",
