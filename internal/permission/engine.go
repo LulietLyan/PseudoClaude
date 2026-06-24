@@ -27,6 +27,11 @@ type CheckResult struct {
 	Rule     string
 	Category Category
 	Target   string
+	CWD      string
+}
+
+type CheckContext struct {
+	CWD string
 }
 
 func NewEngine(root string, opts Options) (*Engine, error) {
@@ -88,10 +93,24 @@ func (e *Engine) Check(mode Mode, call llm.ToolCall, safety tools.Safety) CheckR
 	if e == nil {
 		return CheckResult{Decision: DecisionAllow, Source: "mode", Reason: "permission engine is disabled"}
 	}
+	return e.CheckWithContext(mode, call, safety, CheckContext{CWD: e.root})
+}
+
+func (e *Engine) CheckWithContext(mode Mode, call llm.ToolCall, safety tools.Safety, ctx CheckContext) CheckResult {
+	if e == nil {
+		return CheckResult{Decision: DecisionAllow, Source: "mode", Reason: "permission engine is disabled"}
+	}
+	root := strings.TrimSpace(ctx.CWD)
+	if root == "" {
+		root = e.root
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
 	category, knownCategory := classify(call, safety)
 	friendly := friendlyName(call.Name)
 	if !knownCategory || friendly == "" {
-		return CheckResult{Decision: DecisionAsk, Source: "unknown", Reason: fmt.Sprintf("tool %q is not covered by permission rules", call.Name), Category: category}
+		return CheckResult{Decision: DecisionAsk, Source: "unknown", Reason: fmt.Sprintf("tool %q is not covered by permission rules", call.Name), Category: category, CWD: root}
 	}
 
 	var target string
@@ -100,12 +119,12 @@ func (e *Engine) Check(mode Mode, call llm.ToolCall, safety tools.Safety) CheckR
 	if category == CategoryExec {
 		command, ok := commandText(call)
 		if !ok {
-			return CheckResult{Decision: DecisionDeny, Source: "unknown", Reason: "command arguments could not be parsed", Category: category}
+			return CheckResult{Decision: DecisionDeny, Source: "unknown", Reason: "command arguments could not be parsed", Category: category, CWD: root}
 		}
 		target = command
 		matchTarget = command
 		if ok, pattern := hitsBlacklist(command); ok {
-			return CheckResult{Decision: DecisionDeny, Source: "blacklist", Reason: "command matches dangerous blacklist pattern", Rule: pattern, Category: category, Target: target}
+			return CheckResult{Decision: DecisionDeny, Source: "blacklist", Reason: "command matches dangerous blacklist pattern", Rule: pattern, Category: category, Target: target, CWD: root}
 		}
 	} else if isMCPToolName(call.Name) {
 		target = call.Name
@@ -113,24 +132,24 @@ func (e *Engine) Check(mode Mode, call llm.ToolCall, safety tools.Safety) CheckR
 	} else {
 		rawTarget, rawMatchTarget, ok := pathTarget(call)
 		if !ok {
-			return CheckResult{Decision: DecisionDeny, Source: "unknown", Reason: "file tool path arguments could not be parsed", Category: category}
+			return CheckResult{Decision: DecisionDeny, Source: "unknown", Reason: "file tool path arguments could not be parsed", Category: category, CWD: root}
 		}
 		if pathToolRequiresExactPath(call.Name) && pathContainsGlob(rawTarget) {
-			return CheckResult{Decision: DecisionDeny, Source: "unknown", Reason: call.Name + " does not accept glob patterns; use find_files first", Category: category, Target: rawTarget}
+			return CheckResult{Decision: DecisionDeny, Source: "unknown", Reason: call.Name + " does not accept glob patterns; use find_files first", Category: category, Target: rawTarget, CWD: root}
 		}
-		resolved, inside, err := sandboxTarget(e.root, rawTarget)
+		resolved, inside, err := sandboxTarget(root, rawTarget)
 		if err != nil {
-			return CheckResult{Decision: DecisionDeny, Source: "sandbox", Reason: "path could not be resolved for sandbox check", Category: category, Target: rawTarget}
+			return CheckResult{Decision: DecisionDeny, Source: "sandbox", Reason: "path could not be resolved for sandbox check", Category: category, Target: rawTarget, CWD: root}
 		}
-		rel, relErr := filepath.Rel(e.root, resolved)
+		rel, relErr := filepath.Rel(root, resolved)
 		if relErr != nil {
 			rel = rawTarget
 		}
 		target = filepath.ToSlash(filepath.Clean(rel))
-		matchTarget = normalizeRulePath(e.root, rawMatchTarget)
+		matchTarget = normalizeRulePath(root, rawMatchTarget)
 		isPath = true
 		if !inside {
-			return CheckResult{Decision: DecisionDeny, Source: "sandbox", Reason: "path is outside the project root", Category: category, Target: target}
+			return CheckResult{Decision: DecisionDeny, Source: "sandbox", Reason: "path is outside the project root", Category: category, Target: target, CWD: root}
 		}
 	}
 
@@ -140,11 +159,12 @@ func (e *Engine) Check(mode Mode, call llm.ToolCall, safety tools.Safety) CheckR
 			if result.Target == "" {
 				result.Target = target
 			}
+			result.CWD = root
 			return result
 		}
 	}
 	decision := modeFallback(mode, category)
-	return CheckResult{Decision: decision, Source: "mode", Reason: fmt.Sprintf("%s mode requires %s for %s tools", ParseMode(mode.String()), decision, category), Category: category, Target: target}
+	return CheckResult{Decision: decision, Source: "mode", Reason: fmt.Sprintf("%s mode requires %s for %s tools", ParseMode(mode.String()), decision, category), Category: category, Target: target, CWD: root}
 }
 
 func normalizeRulePath(root, raw string) string {

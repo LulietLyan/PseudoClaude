@@ -133,7 +133,7 @@ func permissionCheckedTool(ctx context.Context, registry *tools.Registry, env to
 		return executeAllowedTool(ctx, registry, env, call, opts)
 	}
 	safety, _ := registry.Safety(call.Name)
-	check := engine.Check(mode, call, safety)
+	check := engine.CheckWithContext(mode, call, safety, permission.CheckContext{CWD: env.CWD})
 	switch check.Decision {
 	case permission.DecisionAllow:
 		return executeAllowedTool(ctx, registry, env, call, opts)
