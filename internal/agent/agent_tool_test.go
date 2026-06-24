@@ -14,6 +14,7 @@ import (
 	"PseudoClaude/internal/permission"
 	"PseudoClaude/internal/subagent"
 	"PseudoClaude/internal/tools"
+	"PseudoClaude/internal/worktree"
 )
 
 func TestAgentToolDefinitionSchemaStable(t *testing.T) {
@@ -118,6 +119,52 @@ func TestAgentToolDefinedSubagentBackground(t *testing.T) {
 	}
 	if len(launcher.inputs) != 1 || launcher.inputs[0].Name != "bg" || launcher.inputs[0].Type != "explore" {
 		t.Fatalf("launches = %#v", launcher.inputs)
+	}
+}
+
+func TestAgentToolWorktreeUnavailable(t *testing.T) {
+	project := t.TempDir()
+	writeProjectAgentWithIsolation(t, project, "iso")
+	tool, _, _ := newAgentToolTestHarness(t, &fakeProvider{})
+	tool.Catalog = subagent.LoadCatalog(subagent.LoadOptions{ProjectRoot: project})
+	result := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"child task","description":"d","subagent_type":"iso"}`), tools.Env{})
+	if result.OK || result.ErrorType != "worktree_unavailable" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestAgentToolWorktreeBackgroundPrepare(t *testing.T) {
+	project := t.TempDir()
+	writeProjectAgentWithIsolation(t, project, "iso")
+	tool, launcher, _ := newAgentToolTestHarness(t, &fakeProvider{})
+	tool.Catalog = subagent.LoadCatalog(subagent.LoadOptions{ProjectRoot: project})
+	tool.Worktrees = &fakeWorktreeService{wt: &worktree.Worktree{Name: "agent-a1234567", Path: "/tmp/wt", Branch: "worktree-agent-a1234567"}}
+	result := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"child task","description":"d","subagent_type":"iso","run_in_background":true}`), tools.Env{})
+	if !result.OK || len(launcher.inputs) != 1 {
+		t.Fatalf("result = %#v inputs=%#v", result, launcher.inputs)
+	}
+	if launcher.inputs[0].Prepare == nil {
+		t.Fatal("background worktree launch did not include prepare")
+	}
+}
+
+func TestAgentToolPerCallWorktreeIsolation(t *testing.T) {
+	tool, launcher, _ := newAgentToolTestHarness(t, &fakeProvider{})
+	tool.Worktrees = &fakeWorktreeService{wt: &worktree.Worktree{Name: "agent-a1234567", Path: "/tmp/wt", Branch: "worktree-agent-a1234567"}}
+	result := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"child task","description":"d","subagent_type":"general-purpose","isolation":"worktree","run_in_background":true}`), tools.Env{})
+	if !result.OK || len(launcher.inputs) != 1 {
+		t.Fatalf("result = %#v inputs=%#v", result, launcher.inputs)
+	}
+	if launcher.inputs[0].Type != "general-purpose" || launcher.inputs[0].Prepare == nil {
+		t.Fatalf("per-call worktree isolation did not prepare worktree launch: %#v", launcher.inputs[0])
+	}
+}
+
+func TestAgentToolRejectsUnknownIsolation(t *testing.T) {
+	tool, _, _ := newAgentToolTestHarness(t, &fakeProvider{})
+	result := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"child task","description":"d","subagent_type":"general-purpose","isolation":"container"}`), tools.Env{})
+	if result.OK || result.ErrorType != "invalid_arguments" {
+		t.Fatalf("result = %#v", result)
 	}
 }
 
@@ -232,6 +279,38 @@ Prompt.
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeProjectAgentWithIsolation(t *testing.T, project, name string) {
+	t.Helper()
+	path := project + "/.PseudoClaude/agents/" + name + ".md"
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `---
+name: ` + name + `
+description: Demo.
+isolation: worktree
+---
+Prompt.
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type fakeWorktreeService struct {
+	wt *worktree.Worktree
+}
+
+func (f *fakeWorktreeService) Create(ctx context.Context, in worktree.CreateInput) (*worktree.Worktree, error) {
+	wt := *f.wt
+	wt.Name = in.Name
+	return &wt, nil
+}
+
+func (f *fakeWorktreeService) AutoCleanup(ctx context.Context, name string) (*worktree.AutoCleanupReport, error) {
+	return &worktree.AutoCleanupReport{Name: name, Path: f.wt.Path, Branch: f.wt.Branch}, nil
 }
 
 type blockingProvider struct{}
