@@ -64,6 +64,7 @@ type LaunchInput struct {
 	Prompt       string
 	Runner       agent.Runner
 	Conversation *conversation.Conversation
+	Prepare      agent.AgentPrepareFunc
 }
 
 type AdoptInput struct {

@@ -76,7 +76,7 @@ func (m *Manager) Launch(ctx context.Context, in LaunchInput) (string, error) {
 	}
 	m.tasks[id] = task
 	m.mu.Unlock()
-	go m.runTask(taskCtx, id, in.Prompt)
+	go m.runTask(taskCtx, id, in.Prompt, in.Prepare)
 	return id, nil
 }
 
@@ -88,6 +88,7 @@ func (m *Manager) LaunchAgent(ctx context.Context, in agent.AgentLaunchInput) (s
 		Prompt:       in.Prompt,
 		Runner:       in.Runner,
 		Conversation: in.Conversation,
+		Prepare:      in.Prepare,
 	})
 }
 
@@ -187,7 +188,7 @@ func (m *Manager) SubscribeDone() <-chan DoneEvent {
 	return m.done
 }
 
-func (m *Manager) runTask(ctx context.Context, id, prompt string) {
+func (m *Manager) runTask(ctx context.Context, id, prompt string, prepare agent.AgentPrepareFunc) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			m.finish(id, StatusFailed, "", fmt.Sprintf("panic: %v", recovered), agent.CompletionResult{})
@@ -202,7 +203,28 @@ func (m *Manager) runTask(ctx context.Context, id, prompt string) {
 	runner := task.Runner
 	conv := task.Conversation
 	m.mu.RUnlock()
+	var cleanup agent.AgentCleanupFunc
+	if prepare != nil {
+		nextRunner, nextPrompt, nextCleanup, err := prepare(ctx, runner, prompt)
+		if err != nil {
+			m.finish(id, StatusFailed, "", err.Error(), agent.CompletionResult{Stop: agent.Stop{Reason: agent.StopStreamError, Message: err.Error()}})
+			return
+		}
+		runner = nextRunner
+		prompt = nextPrompt
+		cleanup = nextCleanup
+		m.mu.Lock()
+		if task := m.tasks[id]; task != nil {
+			task.Runner = runner
+			task.Prompt = prompt
+			task.LastActivity = "prepared"
+		}
+		m.mu.Unlock()
+	}
 	result := m.run(ctx, runner, conv, prompt)
+	if cleanup != nil {
+		result.Text = cleanup(context.Background(), result.Text)
+	}
 	status := statusFromStop(result.Stop.Reason)
 	errText := ""
 	if status == StatusFailed {

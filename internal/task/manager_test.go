@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -119,11 +120,77 @@ func TestManagerLaunchDoesNotInheritParentCancellation(t *testing.T) {
 	}
 }
 
+func TestManagerPrepareCleanup(t *testing.T) {
+	manager := NewManager(Options{
+		IDSource: seqIDs(),
+		Run: func(ctx context.Context, runner agent.Runner, conv *conversation.Conversation, prompt string) agent.CompletionResult {
+			return agent.CompletionResult{Text: prompt + " run", Stop: agent.Stop{Reason: agent.StopCompleted}}
+		},
+	})
+	id, err := manager.Launch(context.Background(), LaunchInput{
+		Prompt: "task",
+		Prepare: func(ctx context.Context, runner agent.Runner, prompt string) (agent.Runner, string, agent.AgentCleanupFunc, error) {
+			return runner, prompt + " prepared", func(ctx context.Context, result string) string {
+				return result + " cleaned"
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, manager, id)
+	snap, _ := manager.Get(id)
+	if snap.Result != "task prepared run cleaned" {
+		t.Fatalf("snapshot = %#v", snap)
+	}
+}
+
+func TestManagerPrepareRunsAsynchronously(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var running atomic.Int32
+	manager := NewManager(Options{
+		IDSource: atomicSeqIDs(),
+		Run: func(ctx context.Context, runner agent.Runner, conv *conversation.Conversation, prompt string) agent.CompletionResult {
+			return agent.CompletionResult{Text: prompt, Stop: agent.Stop{Reason: agent.StopCompleted}}
+		},
+	})
+	prepare := func(ctx context.Context, runner agent.Runner, prompt string) (agent.Runner, string, agent.AgentCleanupFunc, error) {
+		running.Add(1)
+		started <- struct{}{}
+		<-release
+		return runner, prompt, nil, nil
+	}
+	id1, err := manager.Launch(context.Background(), LaunchInput{Prompt: "one", Prepare: prepare})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id2, err := manager.Launch(context.Background(), LaunchInput{Prompt: "two", Prepare: prepare})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	<-started
+	if running.Load() != 2 {
+		t.Fatalf("prepare running = %d", running.Load())
+	}
+	close(release)
+	waitStatus(t, manager, id1, StatusCompleted)
+	waitStatus(t, manager, id2, StatusCompleted)
+}
+
 func seqIDs() IDSource {
 	var n int
 	return func() string {
 		n++
 		return "task-test-" + string(rune('0'+n))
+	}
+}
+
+func atomicSeqIDs() IDSource {
+	var n atomic.Int32
+	return func() string {
+		return "task-test-" + string(rune('0'+n.Add(1)))
 	}
 }
 
@@ -140,4 +207,18 @@ func waitDone(t *testing.T, manager *Manager, id string) {
 			t.Fatalf("timed out waiting for %s", id)
 		}
 	}
+}
+
+func waitStatus(t *testing.T, manager *Manager, id string, status Status) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		snap, ok := manager.Get(id)
+		if ok && snap.Status == status {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	snap, _ := manager.Get(id)
+	t.Fatalf("timed out waiting for %s to become %s: %#v", id, status, snap)
 }
