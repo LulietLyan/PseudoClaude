@@ -94,6 +94,15 @@ type Controller interface {
 	ClearActiveSkills()
 }
 
+type WorktreeController interface {
+	WorktreeAvailable() bool
+	CreateWorktree(name string) (WorktreeSummary, error)
+	ListWorktrees() []WorktreeSummary
+	EnterWorktree(name string) (WorktreeSummary, error)
+	ExitWorktree(remove bool, discard bool) (WorktreeSummary, error)
+	RemoveWorktree(name string, discard bool) (WorktreeSummary, error)
+}
+
 type SkillSummary struct {
 	Name        string
 	Description string
@@ -116,6 +125,7 @@ type AgentSummary struct {
 	Model           string
 	MaxTurns        int
 	Background      bool
+	Isolation       string
 	Tools           []string
 	DisallowedTools []string
 }
@@ -124,4 +134,15 @@ type AgentDetail struct {
 	Active     AgentSummary
 	Overridden []AgentSummary
 	Prompt     string
+}
+
+type WorktreeSummary struct {
+	Name       string
+	Path       string
+	Branch     string
+	Manual     bool
+	Active     bool
+	Dirty      bool
+	DirtyError string
+	Removed    bool
 }

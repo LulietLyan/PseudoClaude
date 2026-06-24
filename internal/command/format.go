@@ -79,13 +79,18 @@ func FormatAgents(agents []AgentSummary) string {
 		if limits != "" {
 			limits = "  " + limits
 		}
-		lines = append(lines, fmt.Sprintf("  %s  %s  source=%s model=%s maxTurns=%d background=%v%s",
+		isolation := ""
+		if strings.TrimSpace(agent.Isolation) != "" {
+			isolation = " isolation=" + agent.Isolation
+		}
+		lines = append(lines, fmt.Sprintf("  %s  %s  source=%s model=%s maxTurns=%d background=%v%s%s",
 			agent.Name,
 			valueOrEmpty(agent.Description),
 			valueOrEmpty(agent.Source),
 			valueOrEmpty(agent.Model),
 			agent.MaxTurns,
 			agent.Background,
+			isolation,
 			limits,
 		))
 	}
@@ -104,6 +109,9 @@ func FormatAgentDetail(detail AgentDetail) string {
 		"Model: " + valueOrEmpty(detail.Active.Model),
 		fmt.Sprintf("Max turns: %d", detail.Active.MaxTurns),
 		fmt.Sprintf("Background: %v", detail.Active.Background),
+	}
+	if strings.TrimSpace(detail.Active.Isolation) != "" {
+		lines = append(lines, "Isolation: "+detail.Active.Isolation)
 	}
 	if limits := agentLimits(detail.Active); limits != "" {
 		lines = append(lines, "Limits: "+limits)
@@ -135,6 +143,47 @@ func FormatStatus(info StatusInfo) string {
 		"CWD: " + valueOrEmpty(info.CWD),
 		"Runtime state: " + valueOrEmpty(info.RuntimeState),
 	}, "\n")
+}
+
+func FormatWorktrees(items []WorktreeSummary) string {
+	if len(items) == 0 {
+		return "No worktrees."
+	}
+	lines := []string{fmt.Sprintf("Worktrees (%d):", len(items)), ""}
+	for _, item := range items {
+		lines = append(lines, "  "+strings.ReplaceAll(FormatWorktree(item), "\n", "\n  "))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func FormatWorktree(item WorktreeSummary) string {
+	flags := []string{}
+	if item.Manual {
+		flags = append(flags, "manual")
+	}
+	if item.Active {
+		flags = append(flags, "active")
+	}
+	if item.Dirty {
+		flags = append(flags, "dirty")
+	}
+	if item.Removed {
+		flags = append(flags, "removed")
+	}
+	flagText := "(none)"
+	if len(flags) > 0 {
+		flagText = strings.Join(flags, ", ")
+	}
+	lines := []string{
+		"Name: " + valueOrEmpty(item.Name),
+		"Path: " + valueOrEmpty(item.Path),
+		"Branch: " + valueOrEmpty(item.Branch),
+		"Flags: " + flagText,
+	}
+	if item.DirtyError != "" {
+		lines = append(lines, "Dirty reason: "+item.DirtyError)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func FormatSession(info SessionInfo) string {

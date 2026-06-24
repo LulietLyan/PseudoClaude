@@ -104,6 +104,27 @@ func ParsePermissionRef(value string) (PermissionRef, Warning) {
 	}
 }
 
+type Isolation string
+
+const (
+	IsolationNone     Isolation = ""
+	IsolationWorktree Isolation = "worktree"
+)
+
+func ParseIsolation(value string) (Isolation, Warning) {
+	switch strings.TrimSpace(value) {
+	case "":
+		return IsolationNone, Warning{}
+	case string(IsolationWorktree):
+		return IsolationWorktree, Warning{}
+	default:
+		return IsolationNone, Warning{
+			Field:   "isolation",
+			Message: "unknown isolation mode, falling back to none",
+		}
+	}
+}
+
 type Definition struct {
 	Name            string
 	Description     string
@@ -113,6 +134,7 @@ type Definition struct {
 	MaxTurns        int
 	Permission      PermissionRef
 	Background      bool
+	Isolation       Isolation
 	SystemPrompt    string
 	Source          Source
 	Path            string

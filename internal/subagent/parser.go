@@ -21,6 +21,7 @@ type parseFrontmatter struct {
 	MaxTurns        int      `yaml:"maxTurns"`
 	PermissionMode  string   `yaml:"permissionMode"`
 	Background      bool     `yaml:"background"`
+	Isolation       string   `yaml:"isolation"`
 }
 
 func ParseDefinition(path string, source Source, data []byte) (Definition, error) {
@@ -59,6 +60,11 @@ func ParseDefinition(path string, source Source, data []byte) (Definition, error
 	}
 	perm, warning := ParsePermissionRef(fm.PermissionMode)
 	def.Permission = perm
+	if !warning.Empty() {
+		def.Warnings = append(def.Warnings, warning.WithContext(path, def.Name))
+	}
+	isolation, warning := ParseIsolation(fm.Isolation)
+	def.Isolation = isolation
 	if !warning.Empty() {
 		def.Warnings = append(def.Warnings, warning.WithContext(path, def.Name))
 	}

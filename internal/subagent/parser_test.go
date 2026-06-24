@@ -63,6 +63,7 @@ description: Warn role.
 model: nope
 permissionMode: yolo
 maxTurns: -2
+isolation: nope
 ---
 Body
 `))
@@ -72,7 +73,23 @@ Body
 	if def.Model != ModelInherit || def.Permission != PermissionInherit || def.MaxTurns != 0 {
 		t.Fatalf("fallbacks not applied: %#v", def)
 	}
-	if len(def.Warnings) != 3 {
-		t.Fatalf("warnings = %d, want 3: %#v", len(def.Warnings), def.Warnings)
+	if len(def.Warnings) != 4 {
+		t.Fatalf("warnings = %d, want 4: %#v", len(def.Warnings), def.Warnings)
+	}
+}
+
+func TestParseDefinitionIsolation(t *testing.T) {
+	def, err := ParseDefinition("iso.md", SourceProject, []byte(`---
+name: iso
+description: Isolated role.
+isolation: worktree
+---
+Body
+`))
+	if err != nil {
+		t.Fatalf("ParseDefinition returned error: %v", err)
+	}
+	if def.Isolation != IsolationWorktree {
+		t.Fatalf("isolation = %q", def.Isolation)
 	}
 }

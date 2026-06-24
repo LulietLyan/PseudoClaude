@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 
 	"PseudoClaude/internal/command"
 	"PseudoClaude/internal/subagent"
+	"PseudoClaude/internal/worktree"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -62,7 +64,7 @@ func (a *commandAdapter) Status() command.StatusInfo {
 		Model:          providerModel(a.model),
 		Usage:          usageSnapshot(a.model),
 		SessionID:      a.model.sessionCtx.ID,
-		CWD:            a.model.cwd,
+		CWD:            a.model.effectiveCWD(),
 		RuntimeState:   stateLabel(a.model.state),
 	}
 }
@@ -198,9 +200,71 @@ func (a *commandAdapter) ReloadAgents() {
 	if a == nil || a.model == nil || a.model.subagents == nil {
 		return
 	}
-	result := a.model.subagents.Reload(subagent.LoadOptions{ProjectRoot: a.model.cwd})
+	result := a.model.subagents.Reload(subagent.LoadOptions{ProjectRoot: a.model.repoCWD})
 	for _, warning := range result.Warnings {
 		a.model.appendTranscript(transcriptEntry{kind: transcriptStatus, text: "Agent warning: " + subagent.FormatWarning(warning)})
+	}
+}
+
+func (a *commandAdapter) WorktreeAvailable() bool {
+	return a != nil && a.model != nil && a.model.worktrees != nil
+}
+
+func (a *commandAdapter) CreateWorktree(name string) (command.WorktreeSummary, error) {
+	wt, err := a.model.worktrees.Create(context.Background(), worktree.CreateInput{Name: name, Manual: true})
+	if err != nil {
+		return command.WorktreeSummary{}, err
+	}
+	return worktreeSummary(worktree.Summary{Name: wt.Name, Path: wt.Path, Branch: wt.Branch, Manual: wt.Manual}), nil
+}
+
+func (a *commandAdapter) ListWorktrees() []command.WorktreeSummary {
+	items := a.model.worktrees.List(context.Background())
+	out := make([]command.WorktreeSummary, 0, len(items))
+	for _, item := range items {
+		out = append(out, worktreeSummary(item))
+	}
+	return out
+}
+
+func (a *commandAdapter) EnterWorktree(name string) (command.WorktreeSummary, error) {
+	session, err := a.model.worktrees.Enter(context.Background(), name)
+	if err != nil {
+		return command.WorktreeSummary{}, err
+	}
+	a.model.setActiveCWD(session.WorktreePath)
+	return command.WorktreeSummary{Name: session.WorktreeName, Path: session.WorktreePath, Active: true}, nil
+}
+
+func (a *commandAdapter) ExitWorktree(remove bool, discard bool) (command.WorktreeSummary, error) {
+	report, err := a.model.worktrees.Exit(context.Background(), worktree.ExitOptions{Remove: remove, Discard: discard})
+	if err != nil {
+		return command.WorktreeSummary{}, err
+	}
+	a.model.setActiveCWD(a.model.repoCWD)
+	return command.WorktreeSummary{Name: report.Name, Path: report.Path, Branch: report.Branch, Removed: report.Removed}, nil
+}
+
+func (a *commandAdapter) RemoveWorktree(name string, discard bool) (command.WorktreeSummary, error) {
+	report, err := a.model.worktrees.Remove(context.Background(), name, worktree.RemoveOptions{Discard: discard})
+	if err != nil {
+		return command.WorktreeSummary{}, err
+	}
+	if a.model.effectiveCWD() == report.Path {
+		a.model.setActiveCWD(a.model.repoCWD)
+	}
+	return command.WorktreeSummary{Name: report.Name, Path: report.Path, Branch: report.Branch, Removed: true}, nil
+}
+
+func worktreeSummary(item worktree.Summary) command.WorktreeSummary {
+	return command.WorktreeSummary{
+		Name:       item.Name,
+		Path:       item.Path,
+		Branch:     item.Branch,
+		Manual:     item.Manual,
+		Active:     item.Active,
+		Dirty:      item.Dirty,
+		DirtyError: item.DirtyError,
 	}
 }
 
@@ -220,6 +284,7 @@ func agentSummary(def subagent.Definition) command.AgentSummary {
 		Model:           string(def.Model),
 		MaxTurns:        def.MaxTurns,
 		Background:      def.Background,
+		Isolation:       string(def.Isolation),
 		Tools:           append([]string(nil), def.Tools...),
 		DisallowedTools: append([]string(nil), def.DisallowedTools...),
 	}

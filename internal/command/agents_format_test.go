@@ -7,10 +7,10 @@ import (
 
 func TestFormatAgents(t *testing.T) {
 	got := FormatAgents([]AgentSummary{
-		{Name: "explore", Description: "Explore.", Source: "builtin", Model: "haiku", DisallowedTools: []string{"write_file"}},
+		{Name: "explore", Description: "Explore.", Source: "builtin", Model: "haiku", Isolation: "worktree", DisallowedTools: []string{"write_file"}},
 		{Name: "plan", Description: "Plan.", Source: "builtin", Model: "sonnet"},
 	})
-	for _, want := range []string{"Loaded sub agents (2)", "explore", "plan", "source=builtin", "disallowed=write_file"} {
+	for _, want := range []string{"Loaded sub agents (2)", "explore", "plan", "source=builtin", "isolation=worktree", "disallowed=write_file"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("FormatAgents missing %q in %q", want, got)
 		}
