@@ -75,6 +75,10 @@ The project focuses on controlled autonomy: the model can inspect files, edit co
     <td><strong>Sub agents with worktree isolation</strong></td>
     <td>Delegates focused tasks to sub agents, optionally running them in isolated Git worktrees to avoid touching the main workspace.</td>
   </tr>
+  <tr>
+    <td><strong>Team Lead collaboration</strong></td>
+    <td>Creates persistent teams, launches named teammates in isolated worktrees, shares task lists, exchanges mailbox messages, and feeds teammate updates back to the Lead.</td>
+  </tr>
 </table>
 
 <p align="right"><a href="#readme-top">Back to top</a></p>
@@ -166,6 +170,18 @@ mcp_servers:
 
 If one MCP server fails to connect, built-in tools and other MCP servers remain available.
 
+### Feature flags
+
+Optional feature flags live under `features`:
+
+```yaml
+features:
+  coordinator_mode: false
+  fork_teammate: false
+```
+
+`coordinator_mode` only takes effect when both the config flag is `true` and the process is started with `PSEUDOCLAUDE_COORDINATOR_MODE=1`. In that mode, the Lead is guided to coordinate teammates, inspect results, and merge work rather than directly edit files. `fork_teammate` reserves the ability to launch teammates from the current Lead context when enabled by future team workflows.
+
 ### Permissions
 
 Permission settings can be layered across user, project, and local files. A shared project policy usually lives at `.PseudoClaude/permissions.yaml`, while personal local decisions live at `.PseudoClaude/permissions.local.yaml`.
@@ -220,6 +236,7 @@ Instruction files support a standalone `@include <relative_path>` line for expan
 | `/hooks` | List loaded lifecycle hooks. |
 | `/agents [reload\|name]` | List, reload, or inspect sub agent roles. |
 | `/worktree ...` | Create, list, enter, exit, or remove managed Git worktrees. |
+| `/team ...` | List teams, inspect team details, delete teams, or kill a member. |
 
 Loaded skills can also register their own slash commands, such as `/<skill-name>`.
 
@@ -255,6 +272,40 @@ When the isolated sub agent finishes, clean worktrees are removed automatically.
 
 <p align="right"><a href="#readme-top">Back to top</a></p>
 
+## Team Lead Collaboration
+
+PseudoClaude can create persistent local teams for longer-running collaboration. A Lead can create a team, assign named members such as `alice` or `bob`, and let each member work in an isolated Git worktree. Team state is stored under `~/.PseudoClaude/teams/<team>/`, including:
+
+| Path | Purpose |
+| --- | --- |
+| `config.json` | Team metadata, backend choice, Lead id, member roster, worktree/session locations. |
+| `inboxes/` | Per-agent mailbox files used for Lead/member communication. |
+| `tasks.json` | Shared team task list with status and dependency metadata. |
+| `sessions/` | Persistent member session directories. |
+
+Core team tools include:
+
+| Tool | Purpose |
+| --- | --- |
+| `TeamCreate` | Create a persistent team and return the config, inbox, and task paths. |
+| `Agent` with `team_name` | Launch a named teammate in the selected team. |
+| `TaskCreate` / `TaskUpdate` | Manage shared team tasks. |
+| `TaskList` / `TaskGet` | List or inspect shared team tasks when `team_name` is provided; otherwise they keep the legacy background-task behavior. |
+| `SendMessage` | Send a team mailbox message, including broadcast messages; legacy background-agent messages still work when no team recipient is detected. |
+| `TeamDelete` / `TeamKill` | Delete a team or terminate a member. |
+
+Example flow:
+
+```text
+Create a team named demo, launch alice, and ask her to read README.md and report the main sections.
+```
+
+PseudoClaude creates the team, starts `alice` with an in-process backend when no terminal pane backend is available, and injects teammate replies back into the Lead as `<team-update>` reminders. Use `/team list` and `/team info demo` to inspect the current state.
+
+Current scope: the in-process backend is the reliable default path. The tmux/iTerm2 pane backends are detected but still intended for follow-up hardening before being treated as the primary workflow.
+
+<p align="right"><a href="#readme-top">Back to top</a></p>
+
 ## Project Structure
 
 ```text
@@ -274,6 +325,7 @@ internal/session/       JSONL session storage and restore support
 internal/skills/        Skill parsing, loading, rendering, and install logic
 internal/subagent/      Sub agent definitions, catalog, and fork context
 internal/task/          Background task lifecycle and task tools
+internal/team/          Persistent Team Lead collaboration state, mailboxes, tasks, and team tools
 internal/tools/         Built-in tool registry and execution
 internal/tui/           Bubble Tea terminal interface
 internal/worktree/      Managed Git worktree lifecycle

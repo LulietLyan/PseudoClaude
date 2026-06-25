@@ -75,6 +75,10 @@ PseudoClaude 是一个面向软件工程工作的本地终端 AI Agent。它把�
     <td><strong>Worktree 隔离子 Agent</strong></td>
     <td>把聚焦任务委派给子 Agent，并可让它们在独立 Git worktree 中运行，避免污染主工作区。</td>
   </tr>
+  <tr>
+    <td><strong>Team Lead 协作团队</strong></td>
+    <td>创建持久化团队，在隔离 worktree 中启动具名队员，共享任务清单，通过 mailbox 通信，并把队员更新回灌给 Lead。</td>
+  </tr>
 </table>
 
 <p align="right"><a href="#readme-top">返回顶部</a></p>
@@ -166,6 +170,18 @@ mcp_servers:
 
 单个 MCP Server 连接失败不会影响内置工具和其它 MCP Server。
 
+### 功能开关
+
+可选功能开关写在 `features` 下：
+
+```yaml
+features:
+  coordinator_mode: false
+  fork_teammate: false
+```
+
+`coordinator_mode` 需要配置项为 `true` 且启动进程时同时设置 `PSEUDOCLAUDE_COORDINATOR_MODE=1` 才会生效。该模式会引导 Lead 主要进行拆解、派工、检查结果和合并，而不是直接编辑文件。`fork_teammate` 为后续从 Lead 当前上下文派生队友的团队流程预留能力开关。
+
 ### 权限规则
 
 权限设置支持用户级、项目级和本地级多层加载。共享项目策略通常写在 `.PseudoClaude/permissions.yaml`，个人本地授权写在 `.PseudoClaude/permissions.local.yaml`。
@@ -220,6 +236,7 @@ permissions:
 | `/hooks` | 查看已加载生命周期 Hook。 |
 | `/agents [reload\|name]` | 查看、刷新或检查子 Agent 角色。 |
 | `/worktree ...` | 创建、列出、进入、退出或删除托管 Git worktree。 |
+| `/team ...` | 列出团队、查看团队详情、删除团队或终止成员。 |
 
 已加载的 Skill 也可以注册自己的 slash 命令，例如 `/<skill-name>`。
 
@@ -255,6 +272,40 @@ You are a focused implementation agent.
 
 <p align="right"><a href="#readme-top">返回顶部</a></p>
 
+## Team Lead 协作团队
+
+PseudoClaude 可以创建持久化的本地团队，用于更长流程的协作。Lead 可以创建团队，派出 `alice`、`bob` 这样的具名成员，并让每个成员在独立 Git worktree 中工作。团队状态存放在 `~/.PseudoClaude/teams/<team>/` 下，包括：
+
+| 路径 | 用途 |
+| --- | --- |
+| `config.json` | 团队元数据、后端选择、Lead id、成员名册、worktree/session 位置。 |
+| `inboxes/` | 每个 Agent 的 mailbox 文件，用于 Lead 与成员通信。 |
+| `tasks.json` | 共享团队任务清单，包含状态和依赖信息。 |
+| `sessions/` | 持久化成员会话目录。 |
+
+核心团队工具包括：
+
+| 工具 | 用途 |
+| --- | --- |
+| `TeamCreate` | 创建持久化团队，并返回配置、inbox 和任务路径。 |
+| 带 `team_name` 的 `Agent` | 在指定团队中启动具名队员。 |
+| `TaskCreate` / `TaskUpdate` | 管理共享团队任务。 |
+| `TaskList` / `TaskGet` | 传入 `team_name` 时列出或查看团队任务；未传团队时保留旧后台任务语义。 |
+| `SendMessage` | 发送团队 mailbox 消息，支持广播；未识别到团队收件人时保留旧后台 Agent 消息语义。 |
+| `TeamDelete` / `TeamKill` | 删除团队或终止成员。 |
+
+示例流程：
+
+```text
+创建一个 demo 团队，派 alice 读取 README.md 并汇报主要章节。
+```
+
+PseudoClaude 会创建团队；当没有可用终端窗格后端时，会用 in-process 后端启动 `alice`；队员回复会作为 `<team-update>` reminder 注入给 Lead。可以用 `/team list` 和 `/team info demo` 查看团队状态。
+
+当前范围：in-process 后端是可靠默认路径。tmux/iTerm2 窗格后端已有检测入口，但仍需要后续继续加固后再作为主工作流使用。
+
+<p align="right"><a href="#readme-top">返回顶部</a></p>
+
 ## 项目结构
 
 ```text
@@ -274,6 +325,7 @@ internal/session/       JSONL 会话存档与恢复
 internal/skills/        Skill 解析、加载、渲染与安装逻辑
 internal/subagent/      子 Agent 定义、目录和 fork 上下文
 internal/task/          后台任务生命周期与任务工具
+internal/team/          Team Lead 协作状态、mailbox、共享任务与团队工具
 internal/tools/         内置工具注册与执行
 internal/tui/           Bubble Tea 终端界面
 internal/worktree/      托管 Git worktree 生命周期
