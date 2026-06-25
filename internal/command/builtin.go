@@ -160,6 +160,14 @@ func Builtins() []Command {
 			Handler:     handleWorktreeCommand,
 		},
 		{
+			Name:        "/team",
+			Description: "Manage persistent collaboration teams.",
+			Usage:       "/team [list|info|delete|kill]",
+			Kind:        KindUI,
+			ArgHint:     "[list|info|delete|kill]",
+			Handler:     handleTeamCommand,
+		},
+		{
 			Name:        "/status",
 			Aliases:     []string{"/st"},
 			Description: "Show runtime status.",

@@ -337,10 +337,21 @@ func summarizeCall(call llm.ToolCall) string {
 		return call.Name
 	}
 	raw := string(call.Arguments)
-	if len(raw) > 160 {
-		raw = raw[:157] + "..."
+	return truncateRunes(raw, 160)
+}
+
+func truncateRunes(s string, limit int) string {
+	if limit <= 0 {
+		return ""
 	}
-	return raw
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	if limit <= 3 {
+		return string(runes[:limit])
+	}
+	return string(runes[:limit-3]) + "..."
 }
 
 func (opts toolExecutionOptions) allows(safety tools.Safety) bool {

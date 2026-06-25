@@ -94,6 +94,14 @@ type Controller interface {
 	ClearActiveSkills()
 }
 
+type TeamController interface {
+	TeamAvailable() bool
+	ListTeams() []TeamSummary
+	TeamInfo(name string) (TeamDetail, bool)
+	DeleteTeam(name string, force bool) error
+	KillTeamMember(teamName, memberName string) error
+}
+
 type WorktreeController interface {
 	WorktreeAvailable() bool
 	CreateWorktree(name string) (WorktreeSummary, error)
@@ -145,4 +153,32 @@ type WorktreeSummary struct {
 	Dirty      bool
 	DirtyError string
 	Removed    bool
+}
+
+type TeamSummary struct {
+	Name          string
+	SanitizedName string
+	Backend       string
+	ConfigPath    string
+	MemberCount   int
+	ActiveCount   int
+}
+
+type TeamDetail struct {
+	TeamSummary
+	InboxDir  string
+	TasksPath string
+	Members   []TeamMemberSummary
+}
+
+type TeamMemberSummary struct {
+	Name         string
+	AgentID      string
+	AgentType    string
+	WorktreePath string
+	Branch       string
+	Backend      string
+	PaneID       string
+	Active       string
+	SessionDir   string
 }

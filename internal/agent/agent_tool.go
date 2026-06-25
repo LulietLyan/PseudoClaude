@@ -28,6 +28,7 @@ type AgentTool struct {
 	Providers  ProviderResolver
 	Background BackgroundPolicy
 	Worktrees  WorktreeService
+	Team       TeamService
 }
 
 type AgentTaskLauncher interface {
@@ -38,6 +39,7 @@ type AgentPrepareFunc func(ctx context.Context, runner Runner, prompt string) (R
 type AgentCleanupFunc func(ctx context.Context, result string) string
 
 type AgentLaunchInput struct {
+	ID           string
 	Name         string
 	Type         string
 	Fork         bool
@@ -48,13 +50,15 @@ type AgentLaunchInput struct {
 }
 
 type AgentToolInput struct {
-	Prompt          string `json:"prompt"`
-	Description     string `json:"description"`
-	SubagentType    string `json:"subagent_type,omitempty"`
-	Model           string `json:"model,omitempty"`
-	Isolation       string `json:"isolation,omitempty"`
-	RunInBackground bool   `json:"run_in_background,omitempty"`
-	Name            string `json:"name,omitempty"`
+	Prompt           string `json:"prompt"`
+	Description      string `json:"description"`
+	SubagentType     string `json:"subagent_type,omitempty"`
+	Model            string `json:"model,omitempty"`
+	Isolation        string `json:"isolation,omitempty"`
+	RunInBackground  bool   `json:"run_in_background,omitempty"`
+	Name             string `json:"name,omitempty"`
+	TeamName         string `json:"team_name,omitempty"`
+	PlanModeRequired bool   `json:"plan_mode_required,omitempty"`
 }
 
 func (t *AgentTool) Definition() tools.Definition {
@@ -66,13 +70,15 @@ func (t *AgentTool) Definition() tools.Definition {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"prompt":            map[string]any{"type": "string", "description": "Task instructions for the sub Agent."},
-				"description":       map[string]any{"type": "string", "description": "Short task description."},
-				"subagent_type":     map[string]any{"type": "string", "description": "Optional registered sub Agent role. Omit to fork the current conversation."},
-				"model":             map[string]any{"type": "string", "description": "Optional model override."},
-				"isolation":         map[string]any{"type": "string", "enum": []string{"worktree"}, "description": "Optional isolation mode for this sub Agent run. Use worktree to run in an isolated Git worktree."},
-				"run_in_background": map[string]any{"type": "boolean", "description": "Run asynchronously in the background."},
-				"name":              map[string]any{"type": "string", "description": "Optional name for a background sub Agent."},
+				"prompt":             map[string]any{"type": "string", "description": "Required. Full task instructions for the sub Agent or team member."},
+				"description":        map[string]any{"type": "string", "description": "Required short task description. For team members, summarize what the member should do."},
+				"subagent_type":      map[string]any{"type": "string", "description": "Optional registered sub Agent role. Omit to fork the current conversation."},
+				"model":              map[string]any{"type": "string", "description": "Optional model override."},
+				"isolation":          map[string]any{"type": "string", "enum": []string{"worktree"}, "description": "Optional isolation mode for this sub Agent run. Use worktree to run in an isolated Git worktree."},
+				"run_in_background":  map[string]any{"type": "boolean", "description": "Run asynchronously in the background."},
+				"name":               map[string]any{"type": "string", "description": "Optional name for a background sub Agent."},
+				"team_name":          map[string]any{"type": "string", "description": "Optional team name. When set, launch a persistent teammate in that team."},
+				"plan_mode_required": map[string]any{"type": "boolean", "description": "Require the teammate to submit a plan for Lead approval before execution."},
 			},
 			"required": []string{"prompt", "description"},
 		},
@@ -88,8 +94,13 @@ func (t *AgentTool) Execute(ctx context.Context, input json.RawMessage, env tool
 	args.Description = strings.TrimSpace(args.Description)
 	args.SubagentType = strings.TrimSpace(args.SubagentType)
 	args.Isolation = strings.TrimSpace(args.Isolation)
-	if args.Prompt == "" || args.Description == "" {
-		return tools.Failure("Agent", "invalid_arguments", "prompt and description are required", nil)
+	args.TeamName = strings.TrimSpace(args.TeamName)
+	args.Name = strings.TrimSpace(args.Name)
+	if args.Prompt == "" {
+		return tools.Failure("Agent", "invalid_arguments", "prompt is required", nil)
+	}
+	if args.Description == "" {
+		args.Description = shortDescription(args.Prompt)
 	}
 	if args.Isolation != "" && args.Isolation != string(subagent.IsolationWorktree) {
 		return tools.Failure("Agent", "invalid_arguments", "unsupported isolation mode: "+args.Isolation, map[string]any{"isolation": args.Isolation})
@@ -99,10 +110,16 @@ func (t *AgentTool) Execute(ctx context.Context, input json.RawMessage, env tool
 		return tools.Failure("Agent", "not_ready", "parent runner context is not ready", nil)
 	}
 	if parentRunnerIsSubagent(parent) {
+		if args.TeamName != "" {
+			return tools.Failure("Agent", "nested_team_member_forbidden", "team members and sub Agents cannot start another team member", nil)
+		}
 		if parentRunnerIsFork(parent) {
 			return tools.Failure("Agent", "nested_agent_forbidden", "Fork sub Agents cannot start another Agent", nil)
 		}
 		return tools.Failure("Agent", "nested_agent_forbidden", "Sub Agents cannot start another Agent", nil)
+	}
+	if args.TeamName != "" {
+		return t.executeTeam(ctx, args, parent)
 	}
 
 	if args.SubagentType == "" {
@@ -113,6 +130,39 @@ func (t *AgentTool) Execute(ctx context.Context, input json.RawMessage, env tool
 		return tools.Failure("Agent", "unknown_subagent_type", "unknown subagent_type: "+args.SubagentType, map[string]any{"subagent_type": args.SubagentType})
 	}
 	return t.executeDefined(ctx, args, parent, def)
+}
+
+func shortDescription(prompt string) string {
+	prompt = strings.TrimSpace(prompt)
+	if len(prompt) <= 80 {
+		return prompt
+	}
+	return strings.TrimSpace(prompt[:80])
+}
+
+func (t *AgentTool) executeTeam(ctx context.Context, args AgentToolInput, parent RunnerSnapshot) tools.Result {
+	if t.Team == nil {
+		return tools.Failure("Agent", "team_unavailable", "team service is unavailable", map[string]any{"team_name": args.TeamName})
+	}
+	name := args.Name
+	if name == "" {
+		name = args.Description
+	}
+	result, err := t.Team.SpawnMember(ctx, TeamLaunchInput{
+		TeamName:         args.TeamName,
+		MemberName:       name,
+		Prompt:           args.Prompt,
+		Description:      args.Description,
+		SubagentType:     args.SubagentType,
+		Model:            args.Model,
+		Fork:             args.SubagentType == "",
+		PlanModeRequired: args.PlanModeRequired,
+		Parent:           parent,
+	})
+	if err != nil {
+		return tools.Failure("Agent", "team_launch_failed", err.Error(), map[string]any{"team_name": args.TeamName, "member_name": name})
+	}
+	return jsonSuccess("Agent", result)
 }
 
 func (t *AgentTool) executeDefined(ctx context.Context, args AgentToolInput, parent RunnerSnapshot, def subagent.Definition) tools.Result {

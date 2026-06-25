@@ -545,10 +545,11 @@ func fitLine(s string, width int) string {
 }
 
 func truncateForDisplay(s string, limit int) (string, bool) {
-	if len(s) <= limit {
+	runes := []rune(s)
+	if len(runes) <= limit {
 		return s, false
 	}
-	return s[:limit] + "...[truncated]", true
+	return string(runes[:limit]) + "...[truncated]", true
 }
 
 func softWrap(s string, width int) string {

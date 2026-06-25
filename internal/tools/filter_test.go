@@ -26,6 +26,11 @@ func TestFilterSubAgentTools(t *testing.T) {
 		filterTool{"edit_file"},
 		filterTool{"run_command"},
 		filterTool{"custom"},
+		filterTool{"TaskCreate"},
+		filterTool{"TaskUpdate"},
+		filterTool{"TaskList"},
+		filterTool{"TaskGet"},
+		filterTool{"SendMessage"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -39,6 +44,28 @@ func TestFilterSubAgentTools(t *testing.T) {
 		DefinitionTools:      []string{"read_file", "write_file"},
 		DefinitionDisallowed: []string{"write_file"},
 	}), []string{"read_file"})
+}
+
+func TestFilterSubAgentToolsTeamMember(t *testing.T) {
+	reg, err := NewRegistry(
+		filterTool{"Agent"},
+		filterTool{"read_file"},
+		filterTool{"write_file"},
+		filterTool{"run_command"},
+		filterTool{"TaskCreate"},
+		filterTool{"TaskUpdate"},
+		filterTool{"TaskList"},
+		filterTool{"TaskGet"},
+		filterTool{"SendMessage"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertNames(t, FilterSubAgentTools(reg, FilterPolicy{}), []string{"read_file", "run_command", "write_file"})
+	assertNames(t, FilterSubAgentTools(reg, FilterPolicy{TeamMember: true}), []string{"SendMessage", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "read_file", "run_command", "write_file"})
+	assertNames(t, FilterSubAgentTools(reg, FilterPolicy{TeamMember: true, Fork: true, InProcessTeamMember: true}), []string{"Agent", "SendMessage", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "read_file", "run_command", "write_file"})
+	assertNames(t, FilterSubAgentTools(reg, FilterPolicy{TeamMember: true, Background: true}), []string{"SendMessage", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "read_file", "run_command", "write_file"})
 }
 
 func assertNames(t *testing.T, got, want []string) {

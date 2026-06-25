@@ -35,6 +35,52 @@ func TestManagerLaunchCompleteAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestManagerPreassignedIDOnFinishAndMultiSubscribe(t *testing.T) {
+	var finished atomic.Int32
+	manager := NewManager(Options{
+		IDSource: seqIDs(),
+		Run: func(ctx context.Context, runner agent.Runner, conv *conversation.Conversation, prompt string) agent.CompletionResult {
+			return agent.CompletionResult{Text: "done", Stop: agent.Stop{Reason: agent.StopCompleted}}
+		},
+	})
+	subA := manager.SubscribeDone()
+	subB := manager.SubscribeDone()
+	id, err := manager.Launch(context.Background(), LaunchInput{
+		ID:     "agent-fixed",
+		Prompt: "task",
+		OnFinish: func(ctx context.Context, event FinishEvent) {
+			if event.TaskID == "agent-fixed" && event.Snapshot.Status == StatusCompleted {
+				finished.Add(1)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "agent-fixed" {
+		t.Fatalf("id = %q, want preassigned", id)
+	}
+	eventA := waitDoneEvent(t, subA)
+	eventB := waitDoneEvent(t, subB)
+	if eventA.TaskID != id || eventB.TaskID != id {
+		t.Fatal("subscribers did not receive task id")
+	}
+	if finished.Load() != 1 {
+		t.Fatalf("finish callback count = %d", finished.Load())
+	}
+}
+
+func waitDoneEvent(t *testing.T, ch <-chan DoneEvent) DoneEvent {
+	t.Helper()
+	select {
+	case event := <-ch:
+		return event
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for done event")
+		return DoneEvent{}
+	}
+}
+
 func TestManagerPanicRecoverAndStop(t *testing.T) {
 	manager := NewManager(Options{IDSource: seqIDs(), Run: func(ctx context.Context, runner agent.Runner, conv *conversation.Conversation, prompt string) agent.CompletionResult {
 		panic("boom")

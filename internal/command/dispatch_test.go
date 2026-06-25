@@ -17,6 +17,11 @@ type fakeController struct {
 	compact      bool
 	clear        bool
 	reloadAgents bool
+	teams        []TeamSummary
+	teamDetail   TeamDetail
+	deletedTeam  string
+	killedTeam   string
+	killedMember string
 }
 
 func (f *fakeController) Show(kind MessageKind, text string) {
@@ -58,6 +63,25 @@ func (f *fakeController) RunSkill(name, args string) error {
 }
 func (f *fakeController) ReloadSkills()      {}
 func (f *fakeController) ClearActiveSkills() { f.clearSkills = true }
+func (f *fakeController) TeamAvailable() bool {
+	return f.teams != nil || f.teamDetail.Name != ""
+}
+func (f *fakeController) ListTeams() []TeamSummary { return f.teams }
+func (f *fakeController) TeamInfo(name string) (TeamDetail, bool) {
+	if f.teamDetail.Name == name {
+		return f.teamDetail, true
+	}
+	return TeamDetail{}, false
+}
+func (f *fakeController) DeleteTeam(name string, force bool) error {
+	f.deletedTeam = name
+	return nil
+}
+func (f *fakeController) KillTeamMember(teamName, memberName string) error {
+	f.killedTeam = teamName
+	f.killedMember = memberName
+	return nil
+}
 
 func TestDispatch(t *testing.T) {
 	reg := NewBuiltinRegistry()
@@ -163,5 +187,29 @@ func TestAgentsCommand(t *testing.T) {
 	got = Dispatch(reg, "/agents explore", ctl)
 	if !got.Handled || len(ctl.messages) == 0 || !strings.Contains(ctl.messages[0], "Prompt.") {
 		t.Fatalf("/agents explore result=%+v messages=%+v", got, ctl.messages)
+	}
+}
+
+func TestTeamCommand(t *testing.T) {
+	reg := NewBuiltinRegistry()
+	ctl := &fakeController{idle: true, teams: []TeamSummary{{Name: "demo", SanitizedName: "demo", Backend: "in-process", MemberCount: 2, ActiveCount: 1}}}
+	got := Dispatch(reg, "/team", ctl)
+	if !got.Handled || len(ctl.messages) == 0 || !strings.Contains(ctl.messages[0], "demo") {
+		t.Fatalf("/team result=%+v messages=%+v", got, ctl.messages)
+	}
+	ctl = &fakeController{idle: true, teamDetail: TeamDetail{TeamSummary: TeamSummary{Name: "demo", SanitizedName: "demo", Backend: "in-process"}, Members: []TeamMemberSummary{{Name: "alice", AgentID: "agent-a"}}}}
+	got = Dispatch(reg, "/team info demo", ctl)
+	if !got.Handled || len(ctl.messages) == 0 || !strings.Contains(ctl.messages[0], "alice") {
+		t.Fatalf("/team info result=%+v messages=%+v", got, ctl.messages)
+	}
+	ctl = &fakeController{idle: true, teams: []TeamSummary{}}
+	got = Dispatch(reg, "/team delete demo --force", ctl)
+	if !got.Handled || ctl.deletedTeam != "demo" {
+		t.Fatalf("/team delete result=%+v ctl=%+v", got, ctl)
+	}
+	ctl = &fakeController{idle: true, teams: []TeamSummary{}}
+	got = Dispatch(reg, "/team kill demo alice", ctl)
+	if !got.Handled || ctl.killedTeam != "demo" || ctl.killedMember != "alice" {
+		t.Fatalf("/team kill result=%+v ctl=%+v", got, ctl)
 	}
 }

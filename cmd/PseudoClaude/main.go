@@ -18,6 +18,8 @@ import (
 	"PseudoClaude/internal/skills"
 	"PseudoClaude/internal/subagent"
 	"PseudoClaude/internal/task"
+	"PseudoClaude/internal/team"
+	teamtools "PseudoClaude/internal/team/tools"
 	"PseudoClaude/internal/tools"
 	"PseudoClaude/internal/tui"
 	"PseudoClaude/internal/worktree"
@@ -130,13 +132,29 @@ func main() {
 		},
 	})
 	taskManager := task.NewManager(task.Options{})
+	teamManager, err := team.NewManager(team.ManagerOptions{
+		HomeDir:     home,
+		ProjectRoot: cwd,
+		Worktrees:   worktreeMgr,
+		Tasks:       taskManager,
+		Logf: func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, "Team 提示: "+format+"\n", args...)
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Team 功能已禁用: %v\n", err)
+	}
 	agentHandle := &agent.RunnerHandle{}
-	if err := registry.Register(&agent.AgentTool{
+	agentTool := &agent.AgentTool{
 		Catalog:   subagentCatalog,
 		Tasks:     taskManager,
 		Parent:    agentHandle,
 		Worktrees: worktreeMgr,
-	}); err != nil {
+	}
+	if teamManager != nil {
+		agentTool.Team = teamManager
+	}
+	if err := registry.Register(agentTool); err != nil {
 		fmt.Fprintf(os.Stderr, "Agent 工具注册错误: %v\n", err)
 		os.Exit(1)
 	}
@@ -149,6 +167,23 @@ func main() {
 		if err := registry.Register(tool); err != nil {
 			fmt.Fprintf(os.Stderr, "Task 工具注册错误: %v\n", err)
 			os.Exit(1)
+		}
+	}
+	if teamManager != nil {
+		for _, tool := range []tools.Tool{
+			teamtools.NewTeamCreateTool(teamManager),
+			teamtools.NewTeamDeleteTool(teamManager),
+			teamtools.NewTeamKillTool(teamManager),
+			teamtools.NewTaskCreateTool(teamManager),
+			teamtools.NewTaskUpdateTool(teamManager),
+			teamtools.NewCompatTaskListTool(teamManager, task.NewTaskListTool(taskManager)),
+			teamtools.NewCompatTaskGetTool(teamManager, task.NewTaskGetTool(taskManager)),
+			teamtools.NewCompatSendMessageTool(teamManager, task.NewSendMessageTool(taskManager)),
+		} {
+			if err := registry.RegisterOrReplace(tool); err != nil {
+				fmt.Fprintf(os.Stderr, "Team 工具注册错误: %v\n", err)
+				os.Exit(1)
+			}
 		}
 	}
 	mcpStatus := fmt.Sprintf("MCP: %d/%d connected, %d registered",
@@ -173,12 +208,16 @@ func main() {
 	} else {
 		startup = append(startup, "Worktree: disabled")
 	}
+	if teamManager != nil {
+		startup = append(startup, fmt.Sprintf("Teams: %d loaded", len(teamManager.List())))
+	}
 	model := tui.New(cfg.Providers, cwd, registry, permissionEngine).
 		WithAgentHandle(agentHandle).
 		WithWorktrees(worktreeMgr).
 		WithSkills(skillCatalog, activeSkills).
 		WithHooks(hookEngine).
 		WithSubAgents(subagentCatalog, taskManager).
+		WithTeams(teamManager).
 		WithPersistentContext(instructionResult.Content, memoryManager).
 		WithStartupStatus(startup...)
 	if err := model.Run(); err != nil {

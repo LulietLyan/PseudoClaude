@@ -19,6 +19,7 @@ import (
 	"PseudoClaude/internal/skills"
 	"PseudoClaude/internal/subagent"
 	"PseudoClaude/internal/task"
+	"PseudoClaude/internal/team"
 	"PseudoClaude/internal/tools"
 	"PseudoClaude/internal/worktree"
 
@@ -32,7 +33,7 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-const Version = "0.3.0"
+const Version = "1.0.0"
 
 type sessionState int
 
@@ -95,6 +96,7 @@ type Model struct {
 	hookPrompts      *hook.PromptQueue
 	subagents        *subagent.Catalog
 	tasks            *task.Manager
+	teams            *team.Manager
 	worktrees        *worktree.Manager
 	agentHandle      *agent.RunnerHandle
 	pendingTaskNotes []string
@@ -169,8 +171,22 @@ func (m Model) WithSubAgents(catalog *subagent.Catalog, manager *task.Manager) M
 	if m.agentHandle == nil {
 		m.agentHandle = &agent.RunnerHandle{}
 	}
-	m.runner.Sub.PendingReminderFn = m.drainTaskNotifications
+	m.runner.Sub.PendingReminderFn = m.pendingReminders
 	return m
+}
+
+func (m Model) WithTeams(manager *team.Manager) Model {
+	m.teams = manager
+	m.runner.Sub.PendingReminderFn = m.pendingReminders
+	return m
+}
+
+func (m *Model) pendingReminders() []string {
+	out := m.drainTaskNotifications()
+	if m.teams != nil {
+		out = append(out, m.teams.LeadReminder()...)
+	}
+	return out
 }
 
 func (m Model) WithAgentHandle(handle *agent.RunnerHandle) Model {

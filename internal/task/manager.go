@@ -17,6 +17,7 @@ type Manager struct {
 	tasks       map[string]*BackgroundTask
 	byName      map[string]string
 	done        chan DoneEvent
+	subscribers []chan DoneEvent
 	idSource    IDSource
 	run         RunFunc
 	autoTimeout time.Duration
@@ -49,7 +50,10 @@ func (m *Manager) Launch(ctx context.Context, in LaunchInput) (string, error) {
 		in.Conversation = &conversation.Conversation{}
 	}
 	taskCtx, cancel := context.WithCancel(context.Background())
-	id := m.idSource()
+	id := in.ID
+	if id == "" {
+		id = m.idSource()
+	}
 	task := &BackgroundTask{
 		ID:           id,
 		Name:         in.Name,
@@ -76,12 +80,13 @@ func (m *Manager) Launch(ctx context.Context, in LaunchInput) (string, error) {
 	}
 	m.tasks[id] = task
 	m.mu.Unlock()
-	go m.runTask(taskCtx, id, in.Prompt, in.Prepare)
+	go m.runTask(taskCtx, id, in.Prompt, in.Prepare, in.OnFinish)
 	return id, nil
 }
 
 func (m *Manager) LaunchAgent(ctx context.Context, in agent.AgentLaunchInput) (string, error) {
 	return m.Launch(ctx, LaunchInput{
+		ID:           in.ID,
 		Name:         in.Name,
 		Type:         in.Type,
 		Fork:         in.Fork,
@@ -185,13 +190,18 @@ func (m *Manager) SubscribeDone() <-chan DoneEvent {
 		close(ch)
 		return ch
 	}
-	return m.done
+	ch := make(chan DoneEvent, 64)
+	m.mu.Lock()
+	m.subscribers = append(m.subscribers, ch)
+	m.mu.Unlock()
+	return ch
 }
 
-func (m *Manager) runTask(ctx context.Context, id, prompt string, prepare agent.AgentPrepareFunc) {
+func (m *Manager) runTask(ctx context.Context, id, prompt string, prepare agent.AgentPrepareFunc, onFinish FinishFunc) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			m.finish(id, StatusFailed, "", fmt.Sprintf("panic: %v", recovered), agent.CompletionResult{})
+			snap := m.finish(id, StatusFailed, "", fmt.Sprintf("panic: %v", recovered), agent.CompletionResult{})
+			m.callOnFinish(onFinish, FinishEvent{TaskID: id, Snapshot: snap})
 		}
 	}()
 	m.mu.RLock()
@@ -207,7 +217,8 @@ func (m *Manager) runTask(ctx context.Context, id, prompt string, prepare agent.
 	if prepare != nil {
 		nextRunner, nextPrompt, nextCleanup, err := prepare(ctx, runner, prompt)
 		if err != nil {
-			m.finish(id, StatusFailed, "", err.Error(), agent.CompletionResult{Stop: agent.Stop{Reason: agent.StopStreamError, Message: err.Error()}})
+			snap := m.finish(id, StatusFailed, "", err.Error(), agent.CompletionResult{Stop: agent.Stop{Reason: agent.StopStreamError, Message: err.Error()}})
+			m.callOnFinish(onFinish, FinishEvent{TaskID: id, Snapshot: snap})
 			return
 		}
 		runner = nextRunner
@@ -233,15 +244,16 @@ func (m *Manager) runTask(ctx context.Context, id, prompt string, prepare agent.
 	if status == StatusCancelled && result.Stop.Message != "" {
 		errText = result.Stop.Message
 	}
-	m.finish(id, status, result.Text, errText, result)
+	snap := m.finish(id, status, result.Text, errText, result)
+	m.callOnFinish(onFinish, FinishEvent{TaskID: id, Snapshot: snap})
 }
 
-func (m *Manager) finish(id string, status Status, resultText, errText string, result agent.CompletionResult) {
+func (m *Manager) finish(id string, status Status, resultText, errText string, result agent.CompletionResult) Snapshot {
 	m.mu.Lock()
 	task := m.tasks[id]
 	if task == nil {
 		m.mu.Unlock()
-		return
+		return Snapshot{}
 	}
 	if task.Status == StatusCancelled && status != StatusFailed {
 		status = StatusCancelled
@@ -257,14 +269,32 @@ func (m *Manager) finish(id string, status Status, resultText, errText string, r
 	} else {
 		task.LastActivity = string(status)
 	}
+	snapshot := snapshotOf(task)
 	m.mu.Unlock()
 	m.publishDone(id)
+	return snapshot
 }
 
 func (m *Manager) publishDone(id string) {
+	m.mu.RLock()
+	subscribers := append([]chan DoneEvent(nil), m.subscribers...)
+	m.mu.RUnlock()
+	event := DoneEvent{TaskID: id}
 	select {
-	case m.done <- DoneEvent{TaskID: id}:
+	case m.done <- event:
 	default:
+	}
+	for _, ch := range subscribers {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+}
+
+func (m *Manager) callOnFinish(onFinish FinishFunc, event FinishEvent) {
+	if onFinish != nil {
+		onFinish(context.Background(), event)
 	}
 }
 

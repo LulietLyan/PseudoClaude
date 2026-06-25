@@ -35,6 +35,7 @@ type Runner struct {
 	HookPrompts   *hook.PromptQueue
 	SessionID     string
 	CWD           string
+	Team          *TeamRunContext
 	Sub           SubRunOptions
 }
 
@@ -289,6 +290,11 @@ func (r Runner) reminder(mode Mode, iteration int) string {
 	}
 	if r.Sub.PendingReminderFn != nil {
 		parts = append(parts, r.Sub.PendingReminderFn()...)
+	}
+	if r.Team != nil {
+		if incoming := strings.TrimSpace(r.Team.Reminder()); incoming != "" {
+			parts = append(parts, incoming)
+		}
 	}
 	return strings.Join(parts, "\n\n")
 }

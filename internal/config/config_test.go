@@ -27,6 +27,33 @@ providers:
 	if cfg.Providers[0].Name != "Claude" || !cfg.Providers[0].Thinking {
 		t.Fatalf("provider not parsed correctly: %+v", cfg.Providers[0])
 	}
+	if cfg.Features.CoordinatorMode || cfg.Features.ForkTeammate {
+		t.Fatalf("features should default to false: %+v", cfg.Features)
+	}
+}
+
+func TestLoadFeatureConfig(t *testing.T) {
+	path := writeConfig(t, `
+providers:
+  - name: Claude
+    protocol: anthropic
+    api_key: sk-ant-test
+    model: claude-test
+features:
+  coordinator_mode: true
+  fork_teammate: true
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.Features.CoordinatorMode {
+		t.Fatal("coordinator_mode was not parsed")
+	}
+	if !cfg.Features.ForkTeammate {
+		t.Fatal("fork_teammate was not parsed")
+	}
 }
 
 func TestLoadRejectsInvalidConfig(t *testing.T) {

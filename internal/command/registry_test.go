@@ -91,7 +91,7 @@ func TestRegistryConflicts(t *testing.T) {
 func TestBuiltins(t *testing.T) {
 	reg := NewBuiltinRegistry()
 	visible := reg.Visible()
-	want := []string{"/agents", "/clear", "/compact", "/do", "/help", "/hooks", "/memory", "/permission", "/plan", "/session", "/skill", "/status", "/worktree"}
+	want := []string{"/agents", "/clear", "/compact", "/do", "/help", "/hooks", "/memory", "/permission", "/plan", "/session", "/skill", "/status", "/team", "/worktree"}
 	if len(visible) != len(want) {
 		t.Fatalf("visible count = %d", len(visible))
 	}
@@ -109,7 +109,7 @@ func TestBuiltins(t *testing.T) {
 			t.Fatalf("%s kind = %v", name, kinds[name])
 		}
 	}
-	for _, name := range []string{"/clear", "/compact", "/do", "/plan"} {
+	for _, name := range []string{"/clear", "/compact", "/do", "/plan", "/team"} {
 		if kinds[name] != KindUI {
 			t.Fatalf("%s kind = %v", name, kinds[name])
 		}

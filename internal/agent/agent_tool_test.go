@@ -34,6 +34,10 @@ func TestAgentToolDefinitionSchemaStable(t *testing.T) {
 	if tool.Definition().Timeout < time.Minute {
 		t.Fatalf("Agent tool timeout too short: %s", tool.Definition().Timeout)
 	}
+	schema := string(after)
+	if !strings.Contains(schema, "team_name") || !strings.Contains(schema, "plan_mode_required") {
+		t.Fatalf("team launch fields missing from schema: %s", schema)
+	}
 }
 
 func TestAgentToolUnknownSubagent(t *testing.T) {
@@ -186,6 +190,63 @@ func TestAgentToolBackgroundDoesNotCaptureApprovalUpgrader(t *testing.T) {
 	}
 }
 
+func TestAgentToolDelegatesTeamLaunch(t *testing.T) {
+	tool, _, _ := newAgentToolTestHarness(t, &fakeProvider{})
+	service := &fakeTeamService{}
+	tool.Team = service
+	result := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"p","description":"d","subagent_type":"general-purpose","name":"alice","team_name":"demo","plan_mode_required":true}`), tools.Env{})
+	if !result.OK {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(service.inputs) != 1 {
+		t.Fatalf("team launches = %#v", service.inputs)
+	}
+	in := service.inputs[0]
+	if in.TeamName != "demo" || in.MemberName != "alice" || in.SubagentType != "general-purpose" || !in.PlanModeRequired {
+		t.Fatalf("team launch input = %+v", in)
+	}
+	if !strings.Contains(result.Content, "agent-a") {
+		t.Fatalf("result content = %q", result.Content)
+	}
+}
+
+func TestAgentToolTeamLaunchDefaultsDescription(t *testing.T) {
+	tool, _, _ := newAgentToolTestHarness(t, &fakeProvider{})
+	service := &fakeTeamService{}
+	tool.Team = service
+	result := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"read README.md and report the headings","team_name":"demo","name":"alice"}`), tools.Env{})
+	if !result.OK {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(service.inputs) != 1 || service.inputs[0].Description == "" {
+		t.Fatalf("team launch input = %#v", service.inputs)
+	}
+}
+
+func TestAgentToolRejectsMissingPrompt(t *testing.T) {
+	tool, _, _ := newAgentToolTestHarness(t, &fakeProvider{})
+	result := tool.Execute(context.Background(), json.RawMessage(`{"description":"d","team_name":"demo","name":"alice"}`), tools.Env{})
+	if result.OK || result.ErrorType != "invalid_arguments" || !strings.Contains(result.Error, "prompt") {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestAgentToolRejectsTeamLaunchFromSubagent(t *testing.T) {
+	tool, _, _ := newAgentToolTestHarness(t, &fakeProvider{})
+	service := &fakeTeamService{}
+	tool.Team = service
+	snap := tool.Parent.Snapshot()
+	snap.Sub.IsSubAgent = true
+	tool.Parent.Store(snap)
+	result := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"p","description":"d","team_name":"demo","name":"alice"}`), tools.Env{})
+	if result.OK || result.ErrorType != "nested_team_member_forbidden" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(service.inputs) != 0 {
+		t.Fatalf("unexpected team launches = %#v", service.inputs)
+	}
+}
+
 func TestAgentToolForkSubagent(t *testing.T) {
 	provider := &fakeProvider{streams: [][]llm.StreamEvent{{{Text: "fork done"}, {Done: true}}}}
 	tool, launcher, parentConv := newAgentToolTestHarness(t, provider)
@@ -262,6 +323,15 @@ type testLauncher struct {
 func (l *testLauncher) LaunchAgent(ctx context.Context, in AgentLaunchInput) (string, error) {
 	l.inputs = append(l.inputs, in)
 	return "task-agent-test-" + string(rune('0'+len(l.inputs))), nil
+}
+
+type fakeTeamService struct {
+	inputs []TeamLaunchInput
+}
+
+func (s *fakeTeamService) SpawnMember(ctx context.Context, in TeamLaunchInput) (TeamLaunchResult, error) {
+	s.inputs = append(s.inputs, in)
+	return TeamLaunchResult{TeamName: in.TeamName, MemberName: in.MemberName, AgentID: "agent-a", Backend: "in-process", WorktreePath: "/tmp/wt", SessionDir: "/tmp/session"}, nil
 }
 
 func writeProjectAgent(t *testing.T, project, name string) {

@@ -6,6 +6,7 @@ import (
 
 	"PseudoClaude/internal/command"
 	"PseudoClaude/internal/subagent"
+	"PseudoClaude/internal/team"
 	"PseudoClaude/internal/worktree"
 
 	tea "charm.land/bubbletea/v2"
@@ -254,6 +255,88 @@ func (a *commandAdapter) RemoveWorktree(name string, discard bool) (command.Work
 		a.model.setActiveCWD(a.model.repoCWD)
 	}
 	return command.WorktreeSummary{Name: report.Name, Path: report.Path, Branch: report.Branch, Removed: true}, nil
+}
+
+func (a *commandAdapter) TeamAvailable() bool {
+	return a != nil && a.model != nil && a.model.teams != nil
+}
+
+func (a *commandAdapter) ListTeams() []command.TeamSummary {
+	if !a.TeamAvailable() {
+		return nil
+	}
+	teams := a.model.teams.List()
+	out := make([]command.TeamSummary, 0, len(teams))
+	for _, tm := range teams {
+		out = append(out, teamSummary(tm))
+	}
+	return out
+}
+
+func (a *commandAdapter) TeamInfo(name string) (command.TeamDetail, bool) {
+	if !a.TeamAvailable() {
+		return command.TeamDetail{}, false
+	}
+	tm, ok := a.model.teams.Get(name)
+	if !ok {
+		return command.TeamDetail{}, false
+	}
+	detail := command.TeamDetail{
+		TeamSummary: teamSummary(tm),
+		InboxDir:    tm.InboxDir,
+		TasksPath:   tm.TasksPath,
+		Members:     make([]command.TeamMemberSummary, 0, len(tm.Members)),
+	}
+	for _, member := range tm.Members {
+		detail.Members = append(detail.Members, teamMemberSummary(member))
+	}
+	return detail, true
+}
+
+func (a *commandAdapter) DeleteTeam(name string, force bool) error {
+	return a.model.teams.Delete(context.Background(), name, force)
+}
+
+func (a *commandAdapter) KillTeamMember(teamName, memberName string) error {
+	return a.model.teams.KillMember(context.Background(), teamName, memberName)
+}
+
+func teamSummary(tm *team.Team) command.TeamSummary {
+	summary := command.TeamSummary{
+		Name:          tm.Name,
+		SanitizedName: tm.SanitizedName,
+		Backend:       string(tm.Backend),
+		ConfigPath:    tm.ConfigPath,
+		MemberCount:   len(tm.Members),
+	}
+	for _, member := range tm.Members {
+		if member.IsActive != nil && *member.IsActive {
+			summary.ActiveCount++
+		}
+	}
+	return summary
+}
+
+func teamMemberSummary(member team.MemberInfo) command.TeamMemberSummary {
+	active := "unknown"
+	if member.IsActive != nil {
+		if *member.IsActive {
+			active = "true"
+		} else {
+			active = "false"
+		}
+	}
+	return command.TeamMemberSummary{
+		Name:         member.Name,
+		AgentID:      member.AgentID,
+		AgentType:    member.AgentType,
+		WorktreePath: member.WorktreePath,
+		Branch:       member.Branch,
+		Backend:      string(member.BackendType),
+		PaneID:       member.PaneID,
+		Active:       active,
+		SessionDir:   member.SessionDir,
+	}
 }
 
 func worktreeSummary(item worktree.Summary) command.WorktreeSummary {

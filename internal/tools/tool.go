@@ -29,6 +29,14 @@ type Env struct {
 	MaxReadBytes     int64
 	MaxOutputBytes   int
 	MaxSearchResults int
+	Team             *TeamEnv
+}
+
+type TeamEnv struct {
+	TeamName   string
+	MemberName string
+	AgentID    string
+	IsLead     bool
 }
 
 type Call struct {

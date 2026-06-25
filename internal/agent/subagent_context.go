@@ -53,6 +53,7 @@ type RunnerSnapshot struct {
 	HookPrompts    *hook.PromptQueue
 	SessionID      string
 	CWD            string
+	Team           *TeamRunContext
 	Conversation   *conversation.Conversation
 	PermissionMode permission.Mode
 	Providers      []config.ProviderConfig

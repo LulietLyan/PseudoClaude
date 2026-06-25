@@ -15,20 +15,39 @@ var AsyncSubAgentAllowedTools = []string{
 	"write_file",
 }
 
+var AsyncTeamMemberAllowedTools = append(append([]string{}, AsyncSubAgentAllowedTools...), "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "SendMessage")
+
+var TeamCollaborationTools = []string{
+	"TaskCreate",
+	"TaskUpdate",
+	"TaskList",
+	"TaskGet",
+	"SendMessage",
+}
+
 type FilterPolicy struct {
 	DefinitionTools      []string
 	DefinitionDisallowed []string
 	Background           bool
 	Fork                 bool
+	TeamMember           bool
+	InProcessTeamMember  bool
 }
 
 func FilterSubAgentTools(reg *Registry, policy FilterPolicy) []string {
 	names := setFromSlice(reg.Names())
+	if !policy.TeamMember {
+		removeAll(names, TeamCollaborationTools)
+	}
 	if !policy.Fork {
 		removeAll(names, AllSubAgentDisallowedTools)
 	}
 	if policy.Background {
-		names = intersect(names, setFromSlice(AsyncSubAgentAllowedTools))
+		allowed := AsyncSubAgentAllowedTools
+		if policy.TeamMember {
+			allowed = AsyncTeamMemberAllowedTools
+		}
+		names = intersect(names, setFromSlice(allowed))
 	}
 	removeAll(names, policy.DefinitionDisallowed)
 	if len(cleanNames(policy.DefinitionTools)) > 0 {

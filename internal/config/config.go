@@ -11,6 +11,12 @@ import (
 
 type Config struct {
 	Providers []ProviderConfig `yaml:"providers"`
+	Features  FeatureConfig    `yaml:"features"`
+}
+
+type FeatureConfig struct {
+	CoordinatorMode bool `yaml:"coordinator_mode"`
+	ForkTeammate    bool `yaml:"fork_teammate"`
 }
 
 type ProviderConfig struct {

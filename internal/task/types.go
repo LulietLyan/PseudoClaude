@@ -57,7 +57,15 @@ type DoneEvent struct {
 	TaskID string
 }
 
+type FinishEvent struct {
+	TaskID   string
+	Snapshot Snapshot
+}
+
+type FinishFunc func(context.Context, FinishEvent)
+
 type LaunchInput struct {
+	ID           string
 	Name         string
 	Type         string
 	Fork         bool
@@ -65,6 +73,7 @@ type LaunchInput struct {
 	Runner       agent.Runner
 	Conversation *conversation.Conversation
 	Prepare      agent.AgentPrepareFunc
+	OnFinish     FinishFunc
 }
 
 type AdoptInput struct {
