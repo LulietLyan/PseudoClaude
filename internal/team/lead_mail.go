@@ -51,3 +51,28 @@ func (m *Manager) LeadReminder() []string {
 	}
 	return reminders
 }
+
+func (m *Manager) HasLeadMail() bool {
+	if m == nil {
+		return false
+	}
+	for _, tm := range m.List() {
+		if tm.LeadAgentID == "" {
+			continue
+		}
+		store, err := mailbox.New(tm.InboxDir)
+		if err != nil {
+			m.warn("failed to open lead mailbox for %s: %v", tm.Name, err)
+			continue
+		}
+		messages, err := store.ReadUnread(tm.LeadAgentID)
+		if err != nil {
+			m.warn("failed to read lead mailbox for %s: %v", tm.Name, err)
+			continue
+		}
+		if len(messages) > 0 {
+			return true
+		}
+	}
+	return false
+}

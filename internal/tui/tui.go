@@ -35,6 +35,8 @@ import (
 
 const Version = "1.0.0"
 
+const teamWakeInterval = 2 * time.Second
+
 type sessionState int
 
 const (
@@ -378,6 +380,9 @@ func (m Model) Init() tea.Cmd {
 	if m.tasks != nil {
 		cmds = append(cmds, waitForTaskDone(m.tasks.SubscribeDone()))
 	}
+	if m.teams != nil {
+		cmds = append(cmds, waitForTeamWake())
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -393,6 +398,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, waitForTaskDone(m.tasks.SubscribeDone())
 		}
 		return m, nil
+	case teamWakeMsg:
+		if m.teams == nil {
+			return m, nil
+		}
+		if m.state == stateIdle && m.teams.HasLeadMail() {
+			return m.submitPresetText("Team update", "Process unread team updates and continue coordinating the team.")
+		}
+		return m, waitForTeamWake()
 	case tea.WindowSizeMsg:
 		return m.handleResize(msg), nil
 	case tea.MouseWheelMsg:

@@ -36,3 +36,34 @@ func TestLeadReminderReadsAndMarksLeadMailbox(t *testing.T) {
 		t.Fatalf("unread after reminder = %#v", unread)
 	}
 }
+
+func TestHasLeadMailPeeksWithoutMarkingRead(t *testing.T) {
+	mgr, err := NewManager(ManagerOptions{HomeDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	team, err := mgr.Create(context.Background(), CreateInput{Name: "Demo", LeadAgentID: "lead-demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := mailbox.New(team.InboxDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mgr.HasLeadMail() {
+		t.Fatal("unexpected lead mail")
+	}
+	if err := store.Write(context.Background(), "lead-demo", mailbox.Message{From: "agent-a", To: "lead-demo", Summary: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if !mgr.HasLeadMail() {
+		t.Fatal("expected lead mail")
+	}
+	unread, err := store.ReadUnread("lead-demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unread) != 1 {
+		t.Fatalf("HasLeadMail should not mark read: %#v", unread)
+	}
+}

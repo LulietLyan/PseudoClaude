@@ -24,6 +24,7 @@ type compactMsg struct {
 	output compact.ManageOutput
 	err    error
 }
+type teamWakeMsg struct{}
 
 func waitForAgentEvent(ch <-chan agent.Event) tea.Cmd {
 	return func() tea.Msg {
@@ -54,6 +55,12 @@ func waitForTaskDone(ch <-chan task.DoneEvent) tea.Cmd {
 		}
 		return taskDoneMsg{id: event.TaskID}
 	}
+}
+
+func waitForTeamWake() tea.Cmd {
+	return tea.Tick(teamWakeInterval, func(time.Time) tea.Msg {
+		return teamWakeMsg{}
+	})
 }
 
 func (m Model) updateIdle(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -186,7 +193,7 @@ func (m Model) submitAgentTextWithTools(text, printableOverride string, allowedT
 	m.runner.HookPrompts = m.hookPrompts
 	m.runner.SessionID = m.sessionCtx.ID
 	m.runner.CWD = m.effectiveCWD()
-	m.runner.Sub.PendingReminderFn = m.drainTaskNotifications
+	m.runner.Sub.PendingReminderFn = m.pendingReminders
 	events := bridgeAgentEvents(m.runner.Run(ctx, req))
 	m.events = events
 	m.refreshAgentHandle(req)

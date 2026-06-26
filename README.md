@@ -291,7 +291,7 @@ Core team tools include:
 | `Agent` with `team_name` | Launch a named teammate in the selected team. |
 | `TaskCreate` / `TaskUpdate` | Manage shared team tasks. |
 | `TaskList` / `TaskGet` | List or inspect shared team tasks when `team_name` is provided; otherwise they keep the legacy background-task behavior. |
-| `SendMessage` | Send a team mailbox message, including broadcast messages; legacy background-agent messages still work when no team recipient is detected. |
+| `SendMessage` | Send a team mailbox message, including broadcast messages; idle in-process teammates are resumed automatically; legacy background-agent messages still work when no team recipient is detected. |
 | `TeamDelete` / `TeamKill` | Delete a team or terminate a member. |
 
 Example flow:
@@ -300,7 +300,7 @@ Example flow:
 Create a team named demo, launch alice, and ask her to read README.md and report the main sections.
 ```
 
-PseudoClaude creates the team, starts `alice` with an in-process backend when no terminal pane backend is available, and injects teammate replies back into the Lead as `<team-update>` reminders. Use `/team list` and `/team info demo` to inspect the current state.
+PseudoClaude creates the team, starts `alice` with an in-process backend when no terminal pane backend is available, and injects teammate replies back into the Lead as `<team-update>` reminders. Idle in-process teammates keep their conversation context, so a later `SendMessage` resumes the same teammate instead of starting over. When the Lead is idle, unread team updates trigger a new coordination turn automatically. Use `/team list` and `/team info demo` to inspect the current state.
 
 Current scope: the in-process backend is the reliable default path. The tmux/iTerm2 pane backends are detected but still intended for follow-up hardening before being treated as the primary workflow.
 
