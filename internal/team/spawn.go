@@ -138,7 +138,7 @@ func (m *Manager) launchInProcess(ctx context.Context, team *Team, member Member
 	runner.Env.Team = &toolkit.TeamEnv{TeamName: team.Name, MemberName: member.Name, AgentID: member.AgentID}
 	_, err := m.tasks.Launch(ctx, task.LaunchInput{
 		ID:           member.AgentID,
-		Name:         member.Name,
+		Name:         member.AgentID,
 		Type:         member.AgentType,
 		Prompt:       in.Prompt,
 		Runner:       runner,

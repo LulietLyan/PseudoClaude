@@ -68,13 +68,25 @@ func (t SendMessageTool) Execute(ctx context.Context, input json.RawMessage, env
 	if err != nil {
 		return teamFailure("SendMessage", err)
 	}
+	resumed := map[string]string{}
 	for _, recipient := range recipients {
 		msg := mailbox.Message{From: from, To: recipient.AgentID, Type: msgType, Summary: args.Summary, Content: args.Content, Payload: args.Payload}
 		if err := store.Write(ctx, recipient.AgentID, msg); err != nil {
 			return teamFailure("SendMessage", err)
 		}
+		if shouldResume(recipient) {
+			taskID, err := t.Manager.ResumeMember(ctx, name, recipient.AgentID)
+			if err != nil {
+				return teamFailure("SendMessage", err)
+			}
+			resumed[recipient.Name] = taskID
+		}
 	}
-	return jsonResult("SendMessage", map[string]any{"team_name": name, "recipients": memberNames(recipients), "type": msgType})
+	payload := map[string]any{"team_name": name, "recipients": memberNames(recipients), "type": msgType}
+	if len(resumed) > 0 {
+		payload["resumed"] = resumed
+	}
+	return jsonResult("SendMessage", payload)
 }
 
 func (t SendMessageTool) recipients(teamName, to string, env base.Env) ([]team.MemberInfo, error) {
@@ -109,4 +121,8 @@ func memberNames(members []team.MemberInfo) []string {
 		out = append(out, member.Name)
 	}
 	return out
+}
+
+func shouldResume(member team.MemberInfo) bool {
+	return member.BackendType == team.BackendInProcess && member.IsActive != nil && !*member.IsActive
 }

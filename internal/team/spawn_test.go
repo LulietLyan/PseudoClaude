@@ -3,6 +3,8 @@ package team
 import (
 	"context"
 	"encoding/json"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -114,6 +116,64 @@ func TestSpawnMemberInProcessRequiresTaskManager(t *testing.T) {
 	}
 }
 
+func TestResumeMemberContinuesIdleInProcessTask(t *testing.T) {
+	home := t.TempDir()
+	var mu sync.Mutex
+	prompts := []string{}
+	tasks := task.NewManager(task.Options{IDSource: atomicTaskIDs(), Run: func(ctx context.Context, runner agent.Runner, conv *conversation.Conversation, prompt string) agent.CompletionResult {
+		mu.Lock()
+		prompts = append(prompts, prompt)
+		mu.Unlock()
+		return agent.CompletionResult{Text: "done " + prompt, Stop: agent.Stop{Reason: agent.StopCompleted}}
+	}})
+	registry, err := tools.NewRegistry(fakeTeamTool{name: "SendMessage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := NewManager(ManagerOptions{HomeDir: home, Worktrees: &fakeWorktrees{}, Tasks: tasks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := mgr.Create(context.Background(), CreateInput{Name: "Demo", LeadAgentID: "lead-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := mgr.SpawnMember(context.Background(), agent.TeamLaunchInput{
+		TeamName:   "Demo",
+		MemberName: "Alice",
+		Prompt:     "initial",
+		Parent: agent.RunnerSnapshot{
+			Provider: fakeTeamProvider{},
+			Registry: registry,
+			Env:      tools.Env{},
+			Config:   agent.DefaultConfig(),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := mgr.MailboxStore("Demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTeamTaskDone(t, tasks, result.AgentID)
+	waitMemberIdleAndLeadMessageCount(t, created.ConfigPath, home, store, result.AgentID, 1)
+	if err := store.Write(context.Background(), result.AgentID, mailbox.Message{From: "lead-a", To: result.AgentID, Type: mailbox.MessageText, Summary: "follow-up", Content: "continue"}); err != nil {
+		t.Fatal(err)
+	}
+	nextID, err := mgr.ResumeMember(context.Background(), "Demo", result.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTeamTaskDone(t, tasks, nextID)
+	waitMemberIdleAndLeadMessageCount(t, created.ConfigPath, home, store, result.AgentID, 2)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(prompts) != 2 || prompts[0] != "initial" || !strings.Contains(prompts[1], "new unread team mailbox messages") {
+		t.Fatalf("prompts = %#v", prompts)
+	}
+}
+
 func waitTeamTaskDone(t *testing.T, tasks *task.Manager, id string) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
@@ -131,6 +191,13 @@ func waitMemberIdleAndLeadMessage(t *testing.T, configPath, home string, store i
 	Read(string) ([]mailbox.Message, error)
 }, agentID string) {
 	t.Helper()
+	waitMemberIdleAndLeadMessageCount(t, configPath, home, store, agentID, 1)
+}
+
+func waitMemberIdleAndLeadMessageCount(t *testing.T, configPath, home string, store interface {
+	Read(string) ([]mailbox.Message, error)
+}, agentID string, count int) {
+	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		reloaded, err := loadTeam(configPath, home)
@@ -139,12 +206,20 @@ func waitMemberIdleAndLeadMessage(t *testing.T, configPath, home string, store i
 		}
 		member, ok := reloaded.MemberByAgentID(agentID)
 		leadMsgs, msgErr := store.Read("lead-a")
-		if ok && member.IsActive != nil && !*member.IsActive && msgErr == nil && len(leadMsgs) == 1 && leadMsgs[0].From == agentID && leadMsgs[0].Summary != "" {
+		if ok && member.IsActive != nil && !*member.IsActive && msgErr == nil && len(leadMsgs) == count && leadMsgs[count-1].From == agentID && leadMsgs[count-1].Summary != "" {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for idle member and lead notification")
+	t.Fatalf("timed out waiting for idle member and %d lead notification(s)", count)
+}
+
+func atomicTaskIDs() task.IDSource {
+	var n int
+	return func() string {
+		n++
+		return "resume-task-" + string(rune('0'+n))
+	}
 }
 
 type fakeTeamProvider struct{}

@@ -65,6 +65,7 @@ func (m *Manager) Launch(ctx context.Context, in LaunchInput) (string, error) {
 		Cancel:       cancel,
 		Runner:       in.Runner,
 		Conversation: in.Conversation,
+		OnFinish:     in.OnFinish,
 		LastActivity: "started",
 	}
 	m.mu.Lock()
@@ -179,6 +180,7 @@ func (m *Manager) SendMessage(ctx context.Context, name, message string) (string
 		Prompt:       message,
 		Runner:       task.Runner,
 		Conversation: task.Conversation,
+		OnFinish:     task.OnFinish,
 	}
 	m.mu.RUnlock()
 	return m.Launch(ctx, in)

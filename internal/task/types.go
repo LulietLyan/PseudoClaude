@@ -33,6 +33,7 @@ type BackgroundTask struct {
 	Cancel       context.CancelFunc
 	Runner       agent.Runner
 	Conversation *conversation.Conversation
+	OnFinish     FinishFunc
 	Usage        llm.Usage
 	ToolCount    int
 	LastActivity string

@@ -6,7 +6,11 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"PseudoClaude/internal/agent"
+	"PseudoClaude/internal/conversation"
+	"PseudoClaude/internal/task"
 	"PseudoClaude/internal/team"
 	base "PseudoClaude/internal/tools"
 )
@@ -129,6 +133,67 @@ func TestSendMessagePlanApprovalRequiresLead(t *testing.T) {
 	}
 }
 
+func TestSendMessageResumesIdleInProcessMember(t *testing.T) {
+	tasks := task.NewManager(task.Options{
+		IDSource: localTaskIDs(),
+		Run: func(ctx context.Context, runner agent.Runner, conv *conversation.Conversation, prompt string) agent.CompletionResult {
+			return agent.CompletionResult{Text: prompt, Stop: agent.Stop{Reason: agent.StopCompleted}}
+		},
+	})
+	id, err := tasks.Launch(context.Background(), task.LaunchInput{ID: "agent-a", Name: "agent-a", Prompt: "initial", Conversation: &conversation.Conversation{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitLocalTaskDone(t, tasks, id)
+	mgr, err := team.NewManager(team.ManagerOptions{HomeDir: t.TempDir(), Tasks: tasks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := mgr.Create(context.Background(), team.CreateInput{Name: "demo", LeadAgentID: "lead-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := false
+	if err := created.AddMember(mgr.HomeDir(), team.MemberInfo{Name: "alice", AgentID: "agent-a", BackendType: team.BackendInProcess, IsActive: &active}); err != nil {
+		t.Fatal(err)
+	}
+	env := base.Env{Team: &base.TeamEnv{TeamName: "demo", MemberName: "lead", AgentID: "lead-a", IsLead: true}}
+	result := NewSendMessageTool(mgr).Execute(context.Background(), json.RawMessage(`{"to":"alice","summary":"next","content":"please continue"}`), env)
+	if !result.OK {
+		t.Fatalf("send = %#v", result)
+	}
+	var payload struct {
+		Resumed map[string]string `json:"resumed"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Resumed["alice"] == "" {
+		t.Fatalf("expected resumed task id in %s", result.Content)
+	}
+}
+
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
+}
+
+func waitLocalTaskDone(t *testing.T, manager *task.Manager, id string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		snap, ok := manager.Get(id)
+		if ok && snap.Status != task.StatusRunning {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", id)
+}
+
+func localTaskIDs() task.IDSource {
+	var n int
+	return func() string {
+		n++
+		return "tool-task-" + string(rune('0'+n))
+	}
 }

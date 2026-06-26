@@ -114,6 +114,7 @@ func TestManagerPanicRecoverAndStop(t *testing.T) {
 }
 
 func TestManagerSendMessage(t *testing.T) {
+	var finished atomic.Int32
 	manager := NewManager(Options{IDSource: seqIDs(), Run: func(ctx context.Context, runner agent.Runner, conv *conversation.Conversation, prompt string) agent.CompletionResult {
 		conv.AddUser(prompt)
 		return agent.CompletionResult{Text: prompt, Stop: agent.Stop{Reason: agent.StopCompleted}}
@@ -121,7 +122,14 @@ func TestManagerSendMessage(t *testing.T) {
 	if _, err := manager.SendMessage(context.Background(), "missing", "hi"); err == nil {
 		t.Fatal("expected missing name error")
 	}
-	id, _ := manager.Launch(context.Background(), LaunchInput{Name: "agent", Prompt: "one", Conversation: &conversation.Conversation{}})
+	id, _ := manager.Launch(context.Background(), LaunchInput{
+		Name:         "agent",
+		Prompt:       "one",
+		Conversation: &conversation.Conversation{},
+		OnFinish: func(context.Context, FinishEvent) {
+			finished.Add(1)
+		},
+	})
 	waitDone(t, manager, id)
 	next, err := manager.SendMessage(context.Background(), "agent", "two")
 	if err != nil {
@@ -134,6 +142,9 @@ func TestManagerSendMessage(t *testing.T) {
 	snap, _ := manager.Get(next)
 	if snap.Result != "two" {
 		t.Fatalf("continued snapshot = %#v", snap)
+	}
+	if finished.Load() != 2 {
+		t.Fatalf("finish callback count = %d", finished.Load())
 	}
 }
 
@@ -159,7 +170,7 @@ func TestManagerLaunchDoesNotInheritParentCancellation(t *testing.T) {
 	case <-time.After(30 * time.Millisecond):
 	}
 	close(allowFinish)
-	waitDone(t, manager, id)
+	waitStatus(t, manager, id, StatusCompleted)
 	snap, _ := manager.Get(id)
 	if snap.Status != StatusCompleted {
 		t.Fatalf("snapshot = %#v", snap)
