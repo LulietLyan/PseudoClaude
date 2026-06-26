@@ -1,0 +1,34 @@
+<svg width="100" height="100" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">PseudoClaude logo</title>
+  <desc id="desc">A transparent vector logo with a hexagonal terminal command core and ordered particles orbiting around it.</desc>
+  <defs>
+    <linearGradient id="g" x1="12" y1="9" x2="89" y2="91" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22F7E8"/>
+      <stop offset=".45" stop-color="#4FAEFF"/>
+      <stop offset="1" stop-color="#C173FF"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="26" y1="20" x2="76" y2="80" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity=".32"/>
+      <stop offset=".52" stop-color="#6EDBFF" stop-opacity=".11"/>
+      <stop offset="1" stop-color="#B66FFF" stop-opacity=".2"/>
+    </linearGradient>
+  </defs>
+  <g fill="url(#g)">
+    <circle cx="50" cy="7.5" r="2.7"/>
+    <circle cx="71" cy="12.4" r="1.6" opacity=".75"/>
+    <circle cx="87.2" cy="29.5" r="2.4"/>
+    <circle cx="92" cy="50" r="1.7" opacity=".72"/>
+    <circle cx="84.5" cy="73.2" r="2.9"/>
+    <circle cx="50" cy="92.5" r="2.7"/>
+    <circle cx="15.5" cy="73.2" r="1.7" opacity=".72"/>
+    <circle cx="8" cy="50" r="2.9"/>
+    <circle cx="12.8" cy="29.5" r="1.9" opacity=".82"/>
+  </g>
+  <g stroke="url(#g)" stroke-linecap="round">
+    <path d="M50 12v7.5M85.5 50H78M50 80.5V88M14.5 50H22" stroke-width="2.6" opacity=".42"/>
+    <path d="M22.2 22.2 27.5 27.5M77.8 22.2l-5.3 5.3M77.8 77.8l-5.3-5.3M22.2 77.8l5.3-5.3" stroke-width="2.2" opacity=".3"/>
+  </g>
+  <path d="M50 20 76 35v30L50 80 24 65V35L50 20Z" fill="url(#glass)" stroke="url(#g)" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M34 50h32M50 31.5v11M50 58v10.5" stroke="url(#g)" stroke-width="3.2" stroke-linecap="round" opacity=".55"/>
+  <path d="M40.5 43.5 47.8 50.8 40.5 58.1M55 58.2h11.2" stroke="url(#g)" stroke-width="5.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

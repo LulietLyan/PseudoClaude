@@ -3,7 +3,7 @@
 <img src="./image/line-neon.gif" width="100%" alt="" />
 
 <div align="center">
-  <img src="./image/PseudoClaude-logo.png" width="148" alt="PseudoClaude logo" />
+  <img src="./image/PseudoClaude-logo.svg" width="148" alt="PseudoClaude logo" />
   <h1>PseudoClaude</h1>
   <p><strong>A Claude Code-style terminal AI agent written in Go.</strong></p>
   <p>
